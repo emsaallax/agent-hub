@@ -205,12 +205,11 @@ async def health_status():
 
 @router.get("/tasks")
 async def list_tasks(limit: int = 50, status: str = ""):
+    q = "SELECT id, kind, status, request, result, model, created_at, updated_at FROM tasks"
     if status:
-        rows = await db.fetch(
-            "SELECT * FROM tasks WHERE status = $1 ORDER BY id DESC LIMIT $2", status, limit
-        )
+        rows = await db.fetch(q + " WHERE status = $1 ORDER BY id DESC LIMIT $2", status, limit)
     else:
-        rows = await db.fetch("SELECT * FROM tasks ORDER BY id DESC LIMIT $1", limit)
+        rows = await db.fetch(q + " ORDER BY id DESC LIMIT $1", limit)
     return _rows(rows)
 
 

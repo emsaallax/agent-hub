@@ -10,11 +10,31 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
-from . import db, memory, vault, wa
+from . import db, memory, settings_store, vault, wa
 
 log = logging.getLogger(__name__)
 
 TASK_TIMEOUT_S = 20 * 60  # максимум 20 минут на фоновую задачу
+
+# Для каждого вида задачи — какие ярусы моделей участвуют (в порядке важности)
+_KIND_TIERS: dict[str, list[str]] = {
+    "research":          ["cheap"],
+    "product_search":    ["cheap"],
+    "lead_search":       ["cheap"],
+    "outreach_prepare":  ["cheap", "strong"],
+    "code":              ["cheap", "strong"],
+    "reflection":        ["cheap"],
+}
+
+
+async def _resolve_model(kind: str) -> str:
+    tiers = _KIND_TIERS.get(kind, ["cheap"])
+    models = []
+    for tier in tiers:
+        m = await settings_store.tier_model(tier)
+        if m not in models:
+            models.append(m)
+    return " → ".join(models)
 
 _running: set[asyncio.Task] = set()
 
@@ -48,10 +68,12 @@ async def find_active(kind: str, request: str):
 
 async def execute(task_id: int, runner: Callable[[], Awaitable[str]]) -> None:
     """Выполнить задачу с таймаутом, сохранить результат, уведомить владельца, заархивировать."""
-    await db.execute(
-        "UPDATE tasks SET status = 'running', updated_at = now() WHERE id = $1", task_id
-    )
     row = await db.fetchrow("SELECT kind, request FROM tasks WHERE id = $1", task_id)
+    model = await _resolve_model(row["kind"])
+    await db.execute(
+        "UPDATE tasks SET status = 'running', model = $2, updated_at = now() WHERE id = $1",
+        task_id, model,
+    )
     try:
         summary = await asyncio.wait_for(runner(), timeout=TASK_TIMEOUT_S)
         await db.execute(

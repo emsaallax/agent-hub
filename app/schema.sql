@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT '';
 
 -- ===== Клиенты =====
 

@@ -275,13 +275,14 @@ async function rTasks(){
   const rows = await api("/tasks?limit=50");
   const icon = s => ({pending:'<span class="badge muted">ждёт</span>',running:'<span class="badge warn">выполняется</span>',done:'<span class="badge ok">готово</span>',error:'<span class="badge err">ошибка</span>'}[s]||esc(s));
   view.innerHTML = `<div class="panel"><h3>Задачи</h3>
-  ${rows.length?`<table><tr><th>#</th><th>Тип</th><th>Статус</th><th>Запрос</th><th>Когда</th></tr>
+  ${rows.length?`<table><tr><th>#</th><th>Тип</th><th>Статус</th><th>Модель</th><th>Запрос</th><th>Когда</th></tr>
     ${rows.map(r=>`
     <tr class="clickable" onclick="const x=document.getElementById('task-${r.id}'); x.style.display = x.style.display==='none'?'':'none'">
       <td>${r.id}</td><td class="mono">${esc(r.kind)}</td><td>${icon(r.status)}</td>
-      <td>${esc((r.request||"").slice(0,90))}</td><td class="muted">${dt(r.updated_at||r.created_at)}</td>
+      <td class="mono muted" style="font-size:11.5px;white-space:nowrap">${esc(r.model||"—")}</td>
+      <td>${esc((r.request||"").slice(0,80))}</td><td class="muted">${dt(r.updated_at||r.created_at)}</td>
     </tr>
-    <tr id="task-${r.id}" style="display:none"><td colspan="5"><div class="expand">${esc(r.result||"(результата ещё нет)")}</div></td></tr>`).join("")}
+    <tr id="task-${r.id}" style="display:none"><td colspan="6"><div class="expand">${esc(r.result||"(результата ещё нет)")}</div></td></tr>`).join("")}
   </table>`:'<div class="empty">Задач ещё не было</div>'}</div>`;
   autorefresh(5000);
 }
