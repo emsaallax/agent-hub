@@ -18,7 +18,10 @@ AGENT_DEFAULTS = {
     "prompt_override": "",
     "disabled_tools": [],
     "enabled": True,
+    "soul": "",
 }
+
+mcp_version = 0  # растёт при изменении списка MCP — сбрасывает кэш собранных агентов
 
 
 async def _load_settings() -> None:
@@ -81,6 +84,7 @@ async def agent_config(name: str) -> dict[str, Any]:
             "prompt_override": row["prompt_override"],
             "disabled_tools": disabled or [],
             "enabled": row["enabled"],
+            "soul": row["soul"],
         }
     _agent_cache[name] = cfg
     return cfg
@@ -92,6 +96,7 @@ async def set_agent_config(
     prompt_override: str | None = None,
     disabled_tools: list[str] | None = None,
     enabled: bool | None = None,
+    soul: str | None = None,
 ) -> dict[str, Any]:
     current = await agent_config(name)
     cfg = {
@@ -99,20 +104,48 @@ async def set_agent_config(
         "prompt_override": prompt_override if prompt_override is not None else current["prompt_override"],
         "disabled_tools": disabled_tools if disabled_tools is not None else current["disabled_tools"],
         "enabled": enabled if enabled is not None else current["enabled"],
+        "soul": soul if soul is not None else current["soul"],
     }
     await db.execute(
         """
-        INSERT INTO agent_configs (name, model_override, prompt_override, disabled_tools, enabled)
-        VALUES ($1, $2, $3, $4::jsonb, $5)
+        INSERT INTO agent_configs (name, model_override, prompt_override, disabled_tools, enabled, soul)
+        VALUES ($1, $2, $3, $4::jsonb, $5, $6)
         ON CONFLICT (name) DO UPDATE SET
             model_override = $2, prompt_override = $3,
-            disabled_tools = $4::jsonb, enabled = $5, updated_at = now()
+            disabled_tools = $4::jsonb, enabled = $5, soul = $6, updated_at = now()
         """,
         name,
         cfg["model_override"],
         cfg["prompt_override"],
         json.dumps(cfg["disabled_tools"]),
         cfg["enabled"],
+        cfg["soul"],
     )
     _agent_cache[name] = cfg
     return cfg
+
+
+# ===== MCP-серверы =====
+
+async def mcp_servers(only_enabled: bool = True) -> list[dict]:
+    query = "SELECT id, name, transport, url, headers, enabled FROM mcp_servers"
+    if only_enabled:
+        query += " WHERE enabled"
+    rows = await db.fetch(query + " ORDER BY id")
+    out = []
+    for r in rows:
+        headers = r["headers"]
+        if isinstance(headers, str):
+            headers = json.loads(headers)
+        out.append(
+            {
+                "id": r["id"], "name": r["name"], "transport": r["transport"],
+                "url": r["url"], "headers": headers or {}, "enabled": r["enabled"],
+            }
+        )
+    return out
+
+
+def bump_mcp_version() -> None:
+    global mcp_version
+    mcp_version += 1

@@ -107,8 +107,8 @@ let activeTab = "overview", refreshTimer = null;
 
 const TABS = [
   ["overview","Обзор"], ["agents","Агенты"], ["tasks","Задачи"], ["memory","Память"],
-  ["leads","Лиды"], ["outreach","Рассылка"], ["watch","Мониторинг"],
-  ["tools","Инструменты"], ["settings","Настройки"],
+  ["vault","Заметки"], ["leads","Лиды"], ["outreach","Рассылка"], ["watch","Мониторинг"],
+  ["tools","Инструменты"], ["mcp","MCP"], ["settings","Настройки"],
 ];
 
 function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
@@ -139,10 +139,12 @@ async function render(){
     else if(activeTab==="agents") await rAgents();
     else if(activeTab==="tasks") await rTasks();
     else if(activeTab==="memory") await rMemory();
+    else if(activeTab==="vault") await rVault();
     else if(activeTab==="leads") await rLeads();
     else if(activeTab==="outreach") await rOutreach();
     else if(activeTab==="watch") await rWatch();
     else if(activeTab==="tools") await rTools();
+    else if(activeTab==="mcp") await rMcp();
     else if(activeTab==="settings") await rSettings();
   }catch(e){
     view.innerHTML = `<div class="panel"><span class="badge err">Ошибка</span> ${esc(e.message)}</div>`;
@@ -167,6 +169,8 @@ async function rOverview(){
     <div class="card"><div class="num">${o.outreach_sent_today}</div><div class="lbl">отправлено сегодня</div></div>
     <div class="card"><div class="num">${o.watched}</div><div class="lbl">товаров в мониторинге</div></div>
     <div class="card"><div class="num">${o.facts}</div><div class="lbl">фактов в памяти</div></div>
+    <div class="card" style="cursor:pointer" onclick="go('vault')"><div class="num">${o.vault_notes}</div><div class="lbl">заметок в vault</div></div>
+    <div class="card" style="cursor:pointer" onclick="go('mcp')"><div class="num">${o.mcp_servers}</div><div class="lbl">MCP-серверов</div></div>
   </div>
   <div class="panel">
     <h3>Планировщик</h3>
@@ -212,6 +216,7 @@ async function rAgents(){
         <div class="title">${esc(a.title)} <span class="muted mono" style="font-weight:400">· ${esc(a.name)}</span></div>
         <div class="muted" style="font-size:12px">${esc(a.description)}</div>
       </div>
+      ${a.use_mcp?'<span class="badge muted">MCP</span>':''}${a.soul?'<span class="badge ok">soul</span>':''}
       <span class="badge mono">${esc(a.model_effective)}</span>
     </div>
     <div class="agent-body">
@@ -222,6 +227,10 @@ async function rAgents(){
       <div class="field">
         <label>Системный промпт (пусто = стандартный, он показан ниже)</label>
         <textarea id="prompt-${a.name}" placeholder="${esc(a.prompt_default)}">${esc(a.prompt_override)}</textarea>
+      </div>
+      <div class="field">
+        <label>Soul — личность и характер агента (добавляется к промпту: тон, ценности, стиль, табу)</label>
+        <textarea id="soul-${a.name}" placeholder="Например: Дерзкий, но вежливый. Говорит коротко. Всегда называет цифры. Никогда не обещает того, что не проверил.">${esc(a.soul)}</textarea>
       </div>
       ${a.tools.length ? `<div class="field"><label>Инструменты</label>
         ${a.tools.map(t=>`
@@ -252,12 +261,13 @@ window.saveAgent = async (name) => {
   await api("/agents/"+name, {method:"PUT", body:{
     model_override: $("#model-"+name).value.trim(),
     prompt_override: $("#prompt-"+name).value.trim(),
+    soul: $("#soul-"+name).value.trim(),
     disabled_tools: disabled,
   }});
   toast("Сохранено — действует со следующего запроса.");
 };
 window.resetAgent = async (name) => {
-  await api("/agents/"+name, {method:"PUT", body:{model_override:"", prompt_override:"", disabled_tools:[], enabled:true}});
+  await api("/agents/"+name, {method:"PUT", body:{model_override:"", prompt_override:"", soul:"", disabled_tools:[], enabled:true}});
   toast("Сброшено к дефолту."); render();
 };
 
@@ -422,7 +432,26 @@ async function rSettings(){
   const f = (key, label) => `
     <div class="field"><label>${label} (дефолт: ${s[key].default})</label>
     <input type="number" id="set-${key}" value="${s[key].effective}" style="max-width:200px"></div>`;
+  const autonomy = s.autonomy_level || "medium";
   view.innerHTML = `
+  <div class="panel">
+    <h3>Автономия агента</h3>
+    <div class="muted" style="margin-bottom:10px">Поведение агента сразу после завершения фоновой задачи:</div>
+    <div class="field">
+      <label>Уровень</label>
+      <select id="autonomy-level" style="max-width:420px">
+        <option value="low"       ${autonomy==='low'     ?'selected':''}>low — только отправить результат, ничего не предлагать</option>
+        <option value="medium"    ${autonomy==='medium'  ?'selected':''}>medium — предложить следующий шаг (дефолт)</option>
+        <option value="high"      ${autonomy==='high'    ?'selected':''}>high — может сам запустить исследование как следующий шаг</option>
+      </select>
+    </div>
+    <button class="btn" onclick="saveSettings()">Сохранить</button>
+  </div>
+  <div class="panel">
+    <h3>Рефлексия</h3>
+    <div class="muted" style="margin-bottom:10px">Агент разбирает последние задачи, пишет уроки в память и заметку в vault. Запускается раз в сутки автоматически.</div>
+    <button class="btn ghost" onclick="runJob('reflection').then(r=>toast(r.message))">Запустить рефлексию сейчас</button>
+  </div>
   <div class="panel">
     <h3>Лимиты рассылки</h3>
     <div class="muted" style="margin-bottom:10px">Применяются сразу, без рестарта. Не задирай — WhatsApp банит за спам-паттерны.</div>
@@ -430,7 +459,7 @@ async function rSettings(){
     ${f("outreach_batch_per_tick","Сообщений за один тик")}
     ${f("outreach_min_delay_s","Минимальная пауза между сообщениями, сек")}
     ${f("outreach_max_delay_s","Максимальная пауза между сообщениями, сек")}
-    <button class="btn" onclick="saveSettings()">Сохранить</button>
+    <button class="btn" onclick="saveSettings()">Сохранить лимиты</button>
   </div>
   <div class="panel">
     <h3>Системное (.env, меняется на поде + рестарт)</h3>
@@ -442,11 +471,231 @@ async function rSettings(){
   </div>`;
 }
 window.saveSettings = async () => {
-  const body = {};
+  const body = { autonomy_level: $("#autonomy-level")?.value };
   for(const k of ["outreach_daily_limit","outreach_batch_per_tick","outreach_min_delay_s","outreach_max_delay_s"])
-    body[k] = parseInt($("#set-"+k).value, 10);
+    body[k] = parseInt($("#set-"+k)?.value||"0", 10);
   await api("/settings", {method:"PUT", body});
-  toast("Лимиты сохранены — действуют сразу.");
+  toast("Настройки сохранены.");
+};
+window.runJob = async job => {
+  const r = await api("/jobs/"+job, {method:"POST"});
+  toast(r.message);
+  return r;
+};
+
+/* ===== Vault (Obsidian) ===== */
+let _vaultNotePath = null;
+
+async function rVault(){
+  const [notes, skills] = await Promise.all([api("/vault"), api("/skills")]);
+  const host = location.origin;
+  view.innerHTML = `
+  <div class="panel">
+    <h3>🗂 Obsidian — живая синхронизация через WebDAV</h3>
+    <div class="muted" style="margin-bottom:10px">Открывай эти заметки прямо в Obsidian. Агент пишет сюда журнал задач, исследования, рефлексии — всё обновляется в реальном времени.</div>
+    <div class="expand" style="font-size:13px;background:var(--panel2)">
+<b>Подключить Obsidian:</b><br>
+1. Community Plugins → найди <b>Remotely Save</b> → Install → Enable<br>
+2. В настройках плагина: Service = <b>WebDAV</b><br>
+3. Server URL: <b>${host}/webdav/</b><br>
+4. Username: <b>admin</b> &nbsp;&nbsp; Password: <b>твой ADMIN_PASSWORD из .env</b><br>
+5. Нажми Sync — vault агента появится в Obsidian и будет обновляться автоматически.
+    </div>
+    <div class="row" style="margin-top:10px">
+      <a href="/api/admin/vault/export" class="btn ghost">⬇ Скачать vault.zip</a>
+      <span class="muted" style="font-size:12px">${notes.length} заметок</span>
+    </div>
+  </div>
+  <div class="panel">
+    <h3>Заметки</h3>
+    <div class="row" style="margin-bottom:10px">
+      <input type="text" id="vault-q" placeholder="Поиск по содержимому…" style="flex:1;min-width:180px" onkeydown="if(event.key==='Enter')searchVault()">
+      <button class="btn ghost" onclick="searchVault()">Найти</button>
+      <button class="btn" onclick="newNote()">+ Новая заметка</button>
+    </div>
+    <div id="vault-search-res"></div>
+    <div id="vault-editor" style="display:none;margin-top:12px;border:1px solid var(--border);border-radius:var(--radius);padding:16px;background:var(--panel2)">
+      <div class="field"><label>Путь (например: Идеи/Реклама.md)</label>
+        <input type="text" id="note-path" placeholder="Папка/Заметка.md"></div>
+      <div class="field"><label>Содержимое (markdown)</label>
+        <textarea id="note-content" style="min-height:260px"></textarea></div>
+      <div class="row">
+        <button class="btn" onclick="saveNote()">Сохранить</button>
+        <button class="btn danger sm" onclick="deleteCurrentNote()">Удалить</button>
+        <button class="btn ghost sm" onclick="$('#vault-editor').style.display='none'">Закрыть</button>
+      </div>
+    </div>
+    ${notes.length ? `<table style="margin-top:10px"><tr><th>Путь</th><th>Размер</th><th>Изменена</th><th></th></tr>
+    ${notes.slice(0,200).map(n=>`<tr>
+      <td class="mono"><span style="cursor:pointer;color:var(--accent)" onclick="openNote(${JSON.stringify(n.path)})">${esc(n.path)}</span></td>
+      <td class="muted">${n.size<1024?n.size+"б":(n.size/1024).toFixed(1)+" кб"}</td>
+      <td class="muted">${dt(n.updated_at)}</td>
+      <td><button class="btn danger sm" onclick="deleteNote(${JSON.stringify(n.path)})">✕</button></td>
+    </tr>`).join("")}</table>`
+    : '<div class="empty">Заметок пока нет — они появятся после первых задач агента</div>'}
+  </div>
+  <div class="panel">
+    <h3>Скиллы — знания из GitHub</h3>
+    <div class="muted" style="margin-bottom:10px">Клонирует репозиторий и индексирует .md/.txt/.rst файлы в vault. Агент находит их через vault_search.</div>
+    <div class="row" style="margin-bottom:10px">
+      <input type="text" id="skill-url" placeholder="https://github.com/owner/repo" style="flex:1;min-width:200px">
+      <button class="btn" onclick="installSkill()">Установить скилл</button>
+    </div>
+    <div id="skill-msg" class="muted" style="margin-bottom:8px"></div>
+    ${skills.length ? `<table><tr><th>Имя</th><th>Репозиторий</th><th>Обновлён</th></tr>
+    ${skills.map(s=>`<tr>
+      <td class="mono">${esc(s.name)}</td>
+      <td><a href="${esc(s.repo)}" target="_blank">${esc(s.repo)}</a></td>
+      <td class="muted">${dt(s.updated_at)}</td>
+    </tr>`).join("")}</table>`
+    : '<div class="empty">Скиллов нет</div>'}
+  </div>`;
+}
+
+window.searchVault = async () => {
+  const q = $("#vault-q").value.trim();
+  if(!q) return;
+  const r = await api("/vault/search?q="+encodeURIComponent(q));
+  const el = $("#vault-search-res");
+  el.innerHTML = r.results.length
+    ? r.results.map(x=>`
+      <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;background:var(--panel2)" onclick="openNote(${JSON.stringify(x.path)})">
+        <div class="mono" style="color:var(--accent);margin-bottom:4px">${esc(x.path)}</div>
+        <div class="muted" style="font-size:12px">${x.snippet}</div>
+      </div>`).join("")
+    : '<div class="empty">Ничего не нашлось</div>';
+};
+
+window.newNote = () => {
+  const today = new Date().toISOString().slice(0,10);
+  $("#note-path").value = `Заметки/${today}.md`;
+  $("#note-content").value = `# Заметка ${today}\n\n`;
+  $("#vault-editor").style.display = "block";
+  _vaultNotePath = null;
+  $("#vault-editor").scrollIntoView({behavior:"smooth"});
+};
+
+window.openNote = async (path) => {
+  const r = await api("/vault/note?path="+encodeURIComponent(path));
+  $("#note-path").value = r.path;
+  $("#note-content").value = r.content;
+  $("#vault-editor").style.display = "block";
+  _vaultNotePath = r.path;
+  $("#vault-editor").scrollIntoView({behavior:"smooth"});
+};
+
+window.saveNote = async () => {
+  const path = $("#note-path").value.trim();
+  const content = $("#note-content").value;
+  if(!path){toast("Укажи путь заметки",true);return;}
+  await api("/vault/note", {method:"PUT", body:{path, content}});
+  toast("Сохранено."); render();
+};
+
+window.deleteCurrentNote = async () => {
+  const path = $("#note-path").value.trim();
+  if(!path || !confirm(`Удалить «${path}»?`)) return;
+  await api("/vault/note?path="+encodeURIComponent(path), {method:"DELETE"});
+  toast("Удалено."); render();
+};
+
+window.deleteNote = async (path) => {
+  if(!confirm(`Удалить «${path}»?`)) return;
+  await api("/vault/note?path="+encodeURIComponent(path), {method:"DELETE"});
+  toast("Удалено."); render();
+};
+
+window.installSkill = async () => {
+  const url = $("#skill-url").value.trim();
+  if(!url){toast("Введи URL репозитория",true);return;}
+  const msg = $("#skill-msg");
+  msg.innerHTML = '<span class="spin"></span> Устанавливаю — может занять минуту...';
+  try {
+    const r = await api("/skills", {method:"POST", body:{repo_url:url}});
+    toast(r.message); render();
+  } catch(e) {
+    toast(e.message, true);
+    msg.textContent = "";
+  }
+};
+
+/* ===== MCP-серверы ===== */
+async function rMcp(){
+  const servers = await api("/mcp");
+  view.innerHTML = `
+  <div class="panel">
+    <h3>MCP-серверы</h3>
+    <div class="muted" style="margin-bottom:12px">
+      Model Context Protocol — подключаешь внешние инструменты (базы данных, календари, браузеры, любые API).
+      Включённые серверы автоматически доступны оркестратору и исследователю — со следующего сообщения, без рестарта.
+    </div>
+    ${servers.length ? `<table><tr><th>Имя</th><th>Транспорт</th><th>URL / команда</th><th>Вкл</th><th></th></tr>
+    ${servers.map(s=>`<tr>
+      <td class="mono"><b>${esc(s.name)}</b></td>
+      <td><span class="badge muted">${esc(s.transport)}</span></td>
+      <td class="mono muted" style="max-width:340px;word-break:break-all;font-size:12px">${esc(s.url)}</td>
+      <td><label class="switch"><input type="checkbox" ${s.enabled?'checked':''} onchange="toggleMcp(${s.id},this.checked)"><span></span></label></td>
+      <td><button class="btn danger sm" onclick="delMcp(${s.id})">✕</button></td>
+    </tr>`).join("")}</table>`
+    : '<div class="empty">MCP-серверов нет. Добавь ниже.</div>'}
+  </div>
+  <div class="panel">
+    <h3>Добавить MCP-сервер</h3>
+    <div class="field"><label>Имя (уникальное)</label>
+      <input type="text" id="mcp-name" placeholder="brave-search"></div>
+    <div class="field"><label>Транспорт</label>
+      <select id="mcp-transport" style="max-width:320px" onchange="mcpHint()">
+        <option value="http">http — Streamable HTTP (стандарт MCP 2025)</option>
+        <option value="sse">sse — Server-Sent Events (старый формат)</option>
+        <option value="stdio">stdio — локальный процесс (команда + аргументы)</option>
+      </select></div>
+    <div class="field"><label id="mcp-url-lbl">URL сервера</label>
+      <input type="text" id="mcp-url" placeholder="https://my-mcp.example.com/mcp"></div>
+    <div class="field"><label>Заголовки (JSON, если нужна авторизация)</label>
+      <textarea id="mcp-headers" style="min-height:56px" placeholder='{"Authorization": "Bearer sk-..."}'></textarea></div>
+    <button class="btn" onclick="addMcp()">Добавить</button>
+    <div class="muted" style="margin-top:14px;font-size:12px">
+      Каталог готовых серверов: <a href="https://github.com/modelcontextprotocol/servers" target="_blank">github.com/modelcontextprotocol/servers</a><br>
+      Примеры: Brave Search, Playwright (браузер), PostgreSQL, GitHub, Google Maps…
+    </div>
+  </div>`;
+}
+
+window.mcpHint = () => {
+  const t = $("#mcp-transport").value;
+  const lbl = $("#mcp-url-lbl");
+  const inp = $("#mcp-url");
+  if(t==="stdio"){
+    lbl.textContent = "Команда (с аргументами, через пробел)";
+    inp.placeholder = "npx -y @modelcontextprotocol/server-brave-search";
+  } else {
+    lbl.textContent = "URL сервера";
+    inp.placeholder = t==="sse" ? "https://my-mcp.example.com/sse" : "https://my-mcp.example.com/mcp";
+  }
+};
+
+window.addMcp = async () => {
+  const name = $("#mcp-name").value.trim();
+  const transport = $("#mcp-transport").value;
+  const url = $("#mcp-url").value.trim();
+  const raw = $("#mcp-headers").value.trim();
+  if(!name||!url){toast("Заполни имя и URL/команду",true);return;}
+  let headers = {};
+  if(raw){try{headers=JSON.parse(raw);}catch{toast("Заголовки — невалидный JSON",true);return;}}
+  await api("/mcp", {method:"POST", body:{name, transport, url, headers}});
+  toast("MCP-сервер добавлен — агенты используют его уже в следующем запросе.");
+  render();
+};
+
+window.toggleMcp = async (id, enabled) => {
+  await api("/mcp/"+id, {method:"PUT", body:{enabled}});
+  toast(enabled ? "Включён." : "Выключен.");
+};
+
+window.delMcp = async id => {
+  if(!confirm("Удалить MCP-сервер?")) return;
+  await api("/mcp/"+id, {method:"DELETE"});
+  toast("Удалён."); render();
 };
 
 nav(); render();

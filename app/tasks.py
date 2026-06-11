@@ -10,7 +10,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
-from . import db, memory, wa
+from . import db, memory, vault, wa
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +66,20 @@ async def execute(task_id: int, runner: Callable[[], Awaitable[str]]) -> None:
         await memory.add_message(
             "assistant", f"✅ Задача #{task_id} ({row['kind']}) завершена. Результат:\n{summary[:1200]}"
         )
-        await wa.notify_owner(f"✅ Задача #{task_id} готова.\n\n{summary}")
+        try:
+            await vault.journal(
+                f"Задача #{task_id} ({row['kind']}): {row['request'][:200]}\n\nИтог: {summary[:600]}"
+            )
+        except Exception:
+            log.exception("vault journal failed for task %s", task_id)
+        # Результат шлёт оркестратор + проактивный комментарий (уровень автономии — в админке)
+        from . import orchestrator  # импорт здесь — против циклической зависимости
+
+        try:
+            await orchestrator.after_task(task_id, row["kind"], row["request"], summary)
+        except Exception:
+            log.exception("after_task failed for %s", task_id)
+            await wa.notify_owner(f"✅ Задача #{task_id} готова.\n\n{summary}")
     except asyncio.TimeoutError:
         log.error("task %s timed out after %ss", task_id, TASK_TIMEOUT_S)
         await db.execute(

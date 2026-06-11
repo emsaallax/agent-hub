@@ -1,6 +1,6 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
-pydantic-ai-slim[openrouter]>=1.0
+pydantic-ai-slim[openrouter,mcp]>=1.0
 pydantic-settings>=2.4
 asyncpg>=0.29
 httpx>=0.27
@@ -9,3 +9,4 @@ lxml>=5.2
 gspread>=6.1
 google-auth>=2.30
 apscheduler>=3.10
+wsgidav>=4.3

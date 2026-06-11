@@ -1,21 +1,27 @@
 """Оркестратор: единая точка входа. Читает сообщение владельца, решает, что делать,
-раздаёт задачи под-агентам через инструменты, отвечает в WhatsApp."""
+раздаёт задачи под-агентам через инструменты, отвечает в WhatsApp.
+
+После завершения фоновой задачи сам осмысляет результат (after_task) и, в зависимости
+от уровня автономии, предлагает или запускает следующий шаг.
+"""
 
 import asyncio
 import logging
+from contextvars import ContextVar
 from typing import Literal
 
 from pydantic_ai.usage import UsageLimits
 
-from . import db, memory, monitoring, tasks, wa
+from . import db, memory, monitoring, reflection, settings_store, tasks, vault, wa
 from .agents_registry import AgentSpec, build, register
-from .subagents import code, lead, outreach, product
+from .subagents import code, lead, outreach, product, researcher
 
 log = logging.getLogger(__name__)
 
 SYSTEM = """Ты — личный ассистент-оркестратор владельца малого бизнеса. Общение в WhatsApp, по-русски.
 
 Твои под-агенты (вызываются инструментами):
+- Исследователь (start_research): ЛЮБОЙ анализ — кому предлагать услугу, конкуренты, рынок, разбор темы. Если запрос аналитический и не подходит под другие инструменты — это сюда.
 - Поиск товаров: сравнение цен, поставщики, новинки. Результат — таблица + сводка.
 - Поиск клиентов: компании с телефонами по нише и городу (2GIS + веб).
 - Рассылка: черновики пишет дешёвая модель, вычитывает сильная, отправка ТОЛЬКО после аппрува владельца.
@@ -24,18 +30,29 @@ SYSTEM = """Ты — личный ассистент-оркестратор вл
 - Мониторинг цен по списку.
 - Реклама: модуль ещё не подключён (честно говори об этом).
 
+Память и знания:
+- Vault — твоя база заметок (журнал задач, исследования, скиллы с GitHub, рефлексии). vault_search — ищи там контекст, vault_write — записывай важное, vault_read — читай заметку целиком.
+- search_memory — архив прошлых задач; remember — запомнить факт навсегда.
+- reflect_now — твоя саморефлексия: разбор своей работы, уроки в память.
+
 Правила:
 - Пиши коротко, по делу, как живой помощник в мессенджере. Без канцелярита.
 - Долгие работы запускай инструментами start_* — они уходят в фон, владельцу придёт уведомление. Не обещай мгновенный результат.
 - О статусе задач НИКОГДА не отвечай по памяти — сначала вызови get_tasks и пересказывай только его ответ. Если задача done — дай результат, не говори, что она ещё идёт.
 - Завершение задачи появляется в истории сообщением «✅ Задача #N завершена». Нет такого сообщения — проверь get_tasks, прежде чем что-то утверждать.
 - Одну и ту же задачу повторно не запускай: инструменты сами скажут, если такая уже выполняется.
+- Будь проактивным: видишь логичный следующий шаг — предложи его сам, не жди вопроса.
 - Если запрос сложный или неоднозначный — сначала переспроси или предложи план одним коротким сообщением, не жги ресурсы на догадки.
 - Рассылку без аппрува не отправляй никогда. Аппрув — через approve_outreach.
-- Для справки о прошлых делах используй search_memory.
 - Если просят что-то вне твоих инструментов — скажи прямо, что пока не умеешь, и предложи ближайшую альтернативу."""
 
 _lock = asyncio.Lock()
+
+# Метка «мы внутри after_task»: авто-запущенные исследования помечаются [auto]
+# и не получают собственного проактивного прохода — защита от цепной реакции.
+_in_after_task: ContextVar[bool] = ContextVar("in_after_task", default=False)
+
+PROACTIVE_KINDS = {"product_search", "lead_search", "research", "code", "outreach_prepare"}
 
 
 # ===== Товары =====
@@ -132,6 +149,56 @@ async def send_to_lead(lead_id: int, text: str) -> str:
     return await outreach.send_to_lead(lead_id, text)
 
 
+# ===== Исследования =====
+
+async def start_research(brief: str) -> str:
+    """Запустить фоновое исследование/анализ на любую тему: кому предлагать услугу, конкуренты, рынок, разбор вопроса. brief — подробное задание своими словами."""
+    if _in_after_task.get():
+        brief = f"[auto] {brief}"
+    dup = await tasks.find_active("research", brief)
+    if dup:
+        return f"Такое исследование уже идёт (#{dup['id']}). Дубль не запускаю."
+    task_id = await tasks.create("research", brief)
+    tasks.start(task_id, lambda: researcher.run(brief))
+    return f"Задача #{task_id} запущена (исследование). Результат придёт сообщением и ляжет в vault."
+
+
+# ===== Vault (заметки) =====
+
+async def vault_search(query: str) -> str:
+    """Поиск по заметкам vault: журнал задач, исследования, скиллы, рефлексии, заметки владельца."""
+    results = await vault.search(query)
+    if not results:
+        return "В vault ничего не нашлось."
+    return "\n\n".join(f"[{r['path']}]\n{r['snippet']}" for r in results)
+
+
+async def vault_write(path: str, content: str, append: bool = True) -> str:
+    """Записать заметку в vault. path — например 'Идеи/Реклама.md'. append=true — дописать в конец, false — перезаписать."""
+    saved = await (vault.append_note(path, content) if append else vault.write_note(path, content))
+    return f"Записал в «{saved}»."
+
+
+async def vault_read(path: str) -> str:
+    """Прочитать заметку vault целиком по её пути."""
+    content = await vault.read_note(path)
+    if content is None:
+        return f"Заметки «{path}» нет. Найди точный путь через vault_search."
+    return content[:6000]
+
+
+# ===== Рефлексия =====
+
+async def reflect_now() -> str:
+    """Запустить саморефлексию: честный разбор последних задач, уроки в память, заметка в vault."""
+    dup = await tasks.find_active("reflection", "ручной запуск")
+    if dup:
+        return f"Рефлексия уже идёт (#{dup['id']})."
+    task_id = await tasks.create("reflection", "ручной запуск")
+    tasks.start(task_id, reflection.run_reflection)
+    return f"Запустил рефлексию (#{task_id}) — пришлю разбор."
+
+
 # ===== Код =====
 
 async def start_code_task(description: str) -> str:
@@ -201,7 +268,9 @@ register(
         tier="orchestrator",
         prompt=SYSTEM,
         description="Главный агент: принимает сообщения владельца и раздаёт задачи под-агентам.",
+        use_mcp=True,
         tools=[
+            start_research,
             start_product_search, watch_product, list_watched_products,
             unwatch_product, run_price_check_now,
             start_lead_search, lead_overview,
@@ -209,6 +278,7 @@ register(
             reject_outreach, send_to_lead,
             start_code_task, start_ads_task,
             get_tasks, search_memory, remember,
+            vault_search, vault_write, vault_read, reflect_now,
         ],
     )
 )
@@ -231,3 +301,49 @@ async def handle_owner_message(text: str) -> None:
         await memory.add_message("assistant", reply)
         await wa.notify_owner(reply)
     tasks.spawn(memory.maintain())
+
+
+# ===== Проактивность после завершения задачи =====
+
+async def after_task(task_id: int, kind: str, request: str, summary: str) -> None:
+    """Зовётся из tasks.execute после успешного завершения.
+
+    Отправляет результат владельцу и — в зависимости от уровня автономии — осмысляет
+    его: medium предлагает следующий шаг, high может сам запустить фоновое исследование.
+    Рассылка и любые отправки клиентам из этого пути невозможны.
+    """
+    await wa.notify_owner(f"✅ Задача #{task_id} готова.\n\n{summary}")
+
+    level = await settings_store.get("autonomy_level", "medium")
+    if level == "low" or kind not in PROACTIVE_KINDS or request.startswith("[auto]"):
+        return
+
+    if level == "high":
+        action_rule = (
+            "Если очевиден полезный аналитический следующий шаг — запусти start_research прямо сейчас "
+            "и скажи владельцу, что уже копаешь. Рассылку, отправку сообщений и approve_outreach "
+            "запускать из этого режима ЗАПРЕЩЕНО — их только предлагай."
+        )
+    else:
+        action_rule = "Сам ничего не запускай — только предложи следующий шаг."
+
+    prompt = (
+        f"Фоновая задача #{task_id} ({kind}) «{request[:200]}» завершилась, результат владельцу уже отправлен:\n"
+        f"{summary[:1500]}\n\n"
+        f"Подумай как ассистент: что владельцу логично сделать дальше? {action_rule}\n"
+        "Ответь ОДНИМ коротким сообщением (1–3 предложения, без воды). "
+        "Если предложить нечего — ответь ровно: НЕТ."
+    )
+    try:
+        agent, _ = await build("orchestrator")
+        token = _in_after_task.set(True)
+        try:
+            result = await agent.run(prompt, usage_limits=UsageLimits(request_limit=4))
+        finally:
+            _in_after_task.reset(token)
+        comment = result.output.strip()
+        if comment and comment.upper() != "НЕТ":
+            await memory.add_message("assistant", comment)
+            await wa.notify_owner(f"💡 {comment}")
+    except Exception:
+        log.exception("after_task proactive pass failed (task %s)", task_id)

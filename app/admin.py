@@ -7,12 +7,12 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
-from . import agents_registry, db, memory, monitoring, settings_store, tasks
+from . import agents_registry, db, memory, monitoring, reflection, settings_store, tasks, vault
 from .config import settings
 from .subagents import outreach
 
@@ -72,6 +72,8 @@ async def overview():
         ),
         "watched": await db.fetchval("SELECT count(*) FROM watched_products WHERE active"),
         "facts": await db.fetchval("SELECT count(*) FROM memory_facts WHERE active"),
+        "vault_notes": await db.fetchval("SELECT count(*) FROM vault_notes"),
+        "mcp_servers": await db.fetchval("SELECT count(*) FROM mcp_servers WHERE enabled"),
         "dialog_messages": await db.fetchval("SELECT count(*) FROM dialog_messages"),
         "agents": len(agents_registry.REGISTRY),
         "scheduler": {
@@ -100,6 +102,8 @@ async def list_agents():
             "model_effective": cfg["model_override"] or tier_model,
             "prompt_default": spec.prompt,
             "prompt_override": cfg["prompt_override"],
+            "soul": cfg["soul"],
+            "use_mcp": spec.use_mcp,
             "enabled": cfg["enabled"],
             "tools": [
                 {
@@ -118,6 +122,7 @@ class AgentUpdate(BaseModel):
     prompt_override: str | None = None
     disabled_tools: list[str] | None = None
     enabled: bool | None = None
+    soul: str | None = None
 
 
 @router.put("/agents/{name}")
@@ -130,6 +135,7 @@ async def update_agent(name: str, body: AgentUpdate):
         prompt_override=body.prompt_override,
         disabled_tools=body.disabled_tools,
         enabled=body.enabled,
+        soul=body.soul,
     )
     return {"ok": True}
 
@@ -313,7 +319,130 @@ async def run_job(job: str):
     if job == "monitoring":
         tasks.spawn(monitoring.tick())
         return {"message": "Проверка цен запущена."}
+    if job == "reflection":
+        task_id = await tasks.create("reflection", "запуск из админки")
+        tasks.start(task_id, reflection.run_reflection)
+        return {"message": f"Рефлексия запущена (задача #{task_id})."}
     raise HTTPException(404, "Неизвестная задача")
+
+
+# ===== Vault (заметки) =====
+
+@router.get("/vault")
+async def vault_list():
+    return _rows(await vault.list_notes())
+
+
+@router.get("/vault/note")
+async def vault_get(path: str):
+    content = await vault.read_note(path)
+    if content is None:
+        raise HTTPException(404, "Заметка не найдена")
+    return {"path": vault.normalize_path(path), "content": content}
+
+
+class NoteIn(BaseModel):
+    path: str
+    content: str
+
+
+@router.put("/vault/note")
+async def vault_put(body: NoteIn):
+    saved = await vault.write_note(body.path, body.content)
+    return {"ok": True, "path": saved}
+
+
+@router.delete("/vault/note")
+async def vault_delete(path: str):
+    if not await vault.delete_note(path):
+        raise HTTPException(404, "Заметка не найдена")
+    return {"ok": True}
+
+
+@router.get("/vault/search")
+async def vault_find(q: str):
+    return {"results": await vault.search(q, limit=10)}
+
+
+@router.get("/vault/export")
+async def vault_export():
+    data = await vault.export_zip()
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="vault.zip"'},
+    )
+
+
+# ===== Скиллы (знания из GitHub) =====
+
+@router.get("/skills")
+async def skills_list():
+    return _rows(await vault.list_skills())
+
+
+class SkillIn(BaseModel):
+    repo_url: str
+
+
+@router.post("/skills")
+async def skills_install(body: SkillIn):
+    return {"message": await vault.install_skill(body.repo_url)}
+
+
+# ===== MCP-серверы =====
+
+@router.get("/mcp")
+async def mcp_list():
+    return await settings_store.mcp_servers(only_enabled=False)
+
+
+class McpIn(BaseModel):
+    name: str
+    transport: str = "http"   # http | sse | stdio
+    url: str
+    headers: dict[str, str] = {}
+
+
+@router.post("/mcp")
+async def mcp_add(body: McpIn):
+    if body.transport not in ("http", "sse", "stdio"):
+        raise HTTPException(400, "transport: http | sse | stdio")
+    if not body.name.strip() or not body.url.strip():
+        raise HTTPException(400, "Нужны имя и URL (или команда для stdio)")
+    import json as _json
+
+    await db.execute(
+        """
+        INSERT INTO mcp_servers (name, transport, url, headers)
+        VALUES ($1, $2, $3, $4::jsonb)
+        ON CONFLICT (name) DO UPDATE SET transport = $2, url = $3, headers = $4::jsonb
+        """,
+        body.name.strip(),
+        body.transport,
+        body.url.strip(),
+        _json.dumps(body.headers),
+    )
+    settings_store.bump_mcp_version()
+    return {"ok": True}
+
+
+class McpToggle(BaseModel):
+    enabled: bool
+
+
+@router.put("/mcp/{server_id}")
+async def mcp_toggle(server_id: int, body: McpToggle):
+    await db.execute("UPDATE mcp_servers SET enabled = $2 WHERE id = $1", server_id, body.enabled)
+    settings_store.bump_mcp_version()
+    return {"ok": True}
+
+
+@router.delete("/mcp/{server_id}")
+async def mcp_delete(server_id: int):
+    await db.execute("DELETE FROM mcp_servers WHERE id = $1", server_id)
+    settings_store.bump_mcp_version()
+    return {"ok": True}
 
 
 # ===== Инструменты =====
@@ -400,6 +529,7 @@ async def get_settings():
             "default": default,
             "effective": await settings_store.get_int(key, default),
         }
+    out["autonomy_level"] = await settings_store.get("autonomy_level", "medium")
     out["info"] = {
         "owner_phone": settings.owner_phone,
         "scheduler_enabled": settings.scheduler_enabled,
@@ -415,6 +545,7 @@ class SettingsUpdate(BaseModel):
     outreach_batch_per_tick: int | None = None
     outreach_min_delay_s: int | None = None
     outreach_max_delay_s: int | None = None
+    autonomy_level: str | None = None
 
 
 @router.put("/settings")
@@ -423,4 +554,8 @@ async def update_settings(body: SettingsUpdate):
         value = getattr(body, key)
         if value is not None:
             await settings_store.set(key, str(int(value)))
+    if body.autonomy_level is not None:
+        if body.autonomy_level not in ("low", "medium", "high"):
+            raise HTTPException(400, "autonomy_level: low | medium | high")
+        await settings_store.set("autonomy_level", body.autonomy_level)
     return {"ok": True}

@@ -4,9 +4,9 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
 
-from . import admin, db, monitoring, orchestrator, tasks
+from . import admin, db, monitoring, orchestrator, reflection, tasks
 from .config import settings
-from .subagents import code, inbox, lead, outreach, product  # noqa: F401 — регистрация агентов в реестре
+from .subagents import code, inbox, lead, outreach, product, researcher  # noqa: F401 — регистрация агентов в реестре
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -39,6 +39,11 @@ async def lifespan(app: FastAPI):
             hours=settings.monitoring_tick_hours,
             id="monitoring_tick", coalesce=True, max_instances=1,
         )
+        scheduler.add_job(
+            reflection.daily_job, "interval",
+            hours=24,
+            id="reflection_daily", coalesce=True, max_instances=1,
+        )
         scheduler.start()
         log.info(
             "Планировщик: рассылка каждые %s мин, мониторинг каждые %s ч",
@@ -53,6 +58,18 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="agent-hub", lifespan=lifespan)
 app.include_router(admin.router)
 app.include_router(admin.page_router)
+
+# WebDAV-эндпоинт для живой синхронизации с Obsidian (плагин Remotely Save).
+# URL: /webdav/   Логин: admin   Пароль: ADMIN_PASSWORD
+if settings.admin_password:
+    try:
+        from starlette.middleware.wsgi import WSGIMiddleware
+        from . import vault as _vault_mod
+
+        app.mount("/webdav", WSGIMiddleware(_vault_mod.create_webdav_app("admin", settings.admin_password)))
+        log.info("WebDAV смонтирован на /webdav/ — подключай Obsidian (Remotely Save)")
+    except ImportError:
+        log.warning("wsgidav не установлен — WebDAV недоступен. Сделай pip install wsgidav.")
 
 
 @app.get("/")

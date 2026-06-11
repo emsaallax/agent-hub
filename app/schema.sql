@@ -52,6 +52,29 @@ CREATE TABLE IF NOT EXISTS agent_configs (
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE agent_configs ADD COLUMN IF NOT EXISTS soul TEXT NOT NULL DEFAULT '';
+
+-- ===== Vault: markdown-заметки (Obsidian-совместимая память) =====
+
+CREATE TABLE IF NOT EXISTS vault_notes (
+    path TEXT PRIMARY KEY,                       -- например 'Журнал/2026-06-11.md'
+    content TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tsv tsvector GENERATED ALWAYS AS (to_tsvector('russian', left(content, 200000))) STORED
+);
+CREATE INDEX IF NOT EXISTS vault_notes_tsv_idx ON vault_notes USING GIN (tsv);
+
+-- ===== MCP-серверы (внешние наборы инструментов) =====
+
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    transport TEXT NOT NULL DEFAULT 'http',      -- http | sse | stdio
+    url TEXT NOT NULL DEFAULT '',                -- url для http/sse, команда для stdio
+    headers JSONB NOT NULL DEFAULT '{}'::jsonb,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- ===== Задачи оркестратора =====
 
