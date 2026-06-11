@@ -113,6 +113,7 @@ async def greenapi_webhook(request: Request):
     sender = body.get("senderData") or {}
     chat = sender.get("chatId") or ""
     text = _extract_text(body.get("messageData") or {})
+    log.info("webhook: chat=%s owner_chat_id=%s text_len=%s", chat, settings.owner_chat_id, len(text))
     if not text or not chat.endswith("@c.us"):  # только личные текстовые сообщения
         return {"ok": True}
 
