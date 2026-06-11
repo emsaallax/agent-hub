@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-hub — админка</title>
+<style>
+:root{
+  --bg:#0e1014; --panel:#161922; --panel2:#1d212c; --border:#272c38;
+  --text:#e6e9ef; --muted:#8b93a5; --accent:#5b9dff; --accent2:#3d7df0;
+  --ok:#3ecf8e; --warn:#f5a623; --err:#ff6b6b; --radius:10px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+a{color:var(--accent);text-decoration:none}
+header{display:flex;align-items:center;gap:16px;padding:14px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg);z-index:10}
+header h1{font-size:16px;margin:0;font-weight:600}
+header .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);display:inline-block;margin-right:6px}
+nav{display:flex;gap:4px;padding:10px 16px;border-bottom:1px solid var(--border);overflow-x:auto;background:var(--bg);position:sticky;top:49px;z-index:9}
+nav button{background:none;border:none;color:var(--muted);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:14px;white-space:nowrap}
+nav button:hover{color:var(--text);background:var(--panel)}
+nav button.active{color:#fff;background:var(--panel2)}
+main{padding:20px;max-width:1200px;margin:0 auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:20px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px}
+.card .num{font-size:26px;font-weight:700}
+.card .lbl{color:var(--muted);font-size:12px;margin-top:2px}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px}
+.panel h3{margin:0 0 12px;font-size:15px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:var(--muted);font-weight:500;padding:6px 10px;border-bottom:1px solid var(--border)}
+td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+tr:last-child td{border-bottom:none}
+tr.clickable{cursor:pointer}
+tr.clickable:hover td{background:var(--panel2)}
+.badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;background:var(--panel2);border:1px solid var(--border)}
+.badge.ok{color:var(--ok);border-color:rgba(62,207,142,.35)}
+.badge.warn{color:var(--warn);border-color:rgba(245,166,35,.35)}
+.badge.err{color:var(--err);border-color:rgba(255,107,107,.35)}
+.badge.muted{color:var(--muted)}
+input[type=text],input[type=number],textarea,select{
+  width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:8px 10px;font:inherit
+}
+textarea{resize:vertical;min-height:90px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent2)}
+button.btn{background:var(--accent2);border:none;color:#fff;padding:8px 16px;border-radius:8px;cursor:pointer;font:inherit}
+button.btn:hover{background:var(--accent)}
+button.btn.ghost{background:var(--panel2);color:var(--text);border:1px solid var(--border)}
+button.btn.ghost:hover{border-color:var(--accent2)}
+button.btn.danger{background:transparent;border:1px solid rgba(255,107,107,.4);color:var(--err)}
+button.btn.sm{padding:4px 10px;font-size:12.5px;border-radius:6px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.field{margin-bottom:10px}
+.field label{display:block;color:var(--muted);font-size:12px;margin-bottom:4px}
+.muted{color:var(--muted)}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+.agent{border:1px solid var(--border);border-radius:var(--radius);margin-bottom:12px;background:var(--panel)}
+.agent-head{display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer}
+.agent-head:hover{background:var(--panel2);border-radius:var(--radius)}
+.agent-head .title{font-weight:600}
+.agent-body{padding:0 16px 16px;display:none;border-top:1px solid var(--border);padding-top:14px}
+.agent.open .agent-body{display:block}
+.tool-line{display:flex;align-items:center;gap:8px;padding:4px 0}
+.switch{position:relative;width:36px;height:20px;flex-shrink:0}
+.switch input{opacity:0;width:0;height:0}
+.switch span{position:absolute;inset:0;background:var(--panel2);border:1px solid var(--border);border-radius:20px;transition:.15s;cursor:pointer}
+.switch span:before{content:"";position:absolute;width:14px;height:14px;left:2px;top:2px;background:var(--muted);border-radius:50%;transition:.15s}
+.switch input:checked+span{background:rgba(91,157,255,.25);border-color:var(--accent2)}
+.switch input:checked+span:before{transform:translateX(16px);background:var(--accent)}
+#toast{position:fixed;bottom:20px;right:20px;background:var(--panel2);border:1px solid var(--border);border-left:3px solid var(--ok);
+  padding:12px 18px;border-radius:8px;display:none;z-index:100;max-width:380px}
+#toast.err{border-left-color:var(--err)}
+.expand{white-space:pre-wrap;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;margin:6px 0;font-size:12.5px}
+.spin{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:sp 1s linear infinite;vertical-align:-2px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.empty{color:var(--muted);padding:18px;text-align:center}
+@media(max-width:700px){main{padding:12px}.cards{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot"></span>agent-hub</h1>
+  <span class="muted" id="head-info"></span>
+</header>
+<nav id="nav"></nav>
+<main id="view"><div class="empty"><span class="spin"></span> Загрузка…</div></main>
+<div id="toast"></div>
+
+<datalist id="model-list">
+  <option value="google/gemini-2.5-flash">
+  <option value="google/gemini-2.5-flash-lite">
+  <option value="google/gemini-2.5-pro">
+  <option value="anthropic/claude-sonnet-4.5">
+  <option value="anthropic/claude-haiku-4.5">
+  <option value="openai/gpt-4o-mini">
+  <option value="openai/gpt-4.1">
+  <option value="deepseek/deepseek-chat-v3.1">
+  <option value="qwen/qwen3-coder">
+</datalist>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const view = $("#view");
+let activeTab = "overview", refreshTimer = null;
+
+const TABS = [
+  ["overview","Обзор"], ["agents","Агенты"], ["tasks","Задачи"], ["memory","Память"],
+  ["leads","Лиды"], ["outreach","Рассылка"], ["watch","Мониторинг"],
+  ["tools","Инструменты"], ["settings","Настройки"],
+];
+
+function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function dt(s){ if(!s) return "—"; const d = new Date(s); return d.toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); }
+
+async function api(path, opts={}){
+  if(opts.body !== undefined){ opts.headers = {"Content-Type":"application/json", ...(opts.headers||{})}; opts.body = JSON.stringify(opts.body); }
+  const r = await fetch("/api/admin"+path, opts);
+  if(!r.ok){ let msg = r.status+" "+r.statusText; try{ msg = (await r.json()).detail || msg }catch(e){} throw new Error(msg); }
+  return r.json();
+}
+
+function toast(msg, isErr=false){
+  const t = $("#toast");
+  t.textContent = msg; t.className = isErr ? "err" : ""; t.style.display = "block";
+  clearTimeout(t._h); t._h = setTimeout(()=> t.style.display="none", 3500);
+}
+
+function nav(){
+  $("#nav").innerHTML = TABS.map(([id,label]) =>
+    `<button class="${id===activeTab?'active':''}" onclick="go('${id}')">${label}</button>`).join("");
+}
+window.go = (tab) => { activeTab = tab; nav(); clearTimeout(refreshTimer); render(); };
+
+async function render(){
+  try{
+    if(activeTab==="overview") await rOverview();
+    else if(activeTab==="agents") await rAgents();
+    else if(activeTab==="tasks") await rTasks();
+    else if(activeTab==="memory") await rMemory();
+    else if(activeTab==="leads") await rLeads();
+    else if(activeTab==="outreach") await rOutreach();
+    else if(activeTab==="watch") await rWatch();
+    else if(activeTab==="tools") await rTools();
+    else if(activeTab==="settings") await rSettings();
+  }catch(e){
+    view.innerHTML = `<div class="panel"><span class="badge err">Ошибка</span> ${esc(e.message)}</div>`;
+  }
+}
+
+function autorefresh(ms){ clearTimeout(refreshTimer); refreshTimer = setTimeout(render, ms); }
+
+/* ===== Обзор ===== */
+async function rOverview(){
+  const o = await api("/overview");
+  const t = o.tasks, l = o.leads;
+  const sum = obj => Object.values(obj).reduce((a,b)=>a+b,0);
+  $("#head-info").textContent = `агентов: ${o.agents}`;
+  view.innerHTML = `
+  <div class="cards">
+    <div class="card"><div class="num">${t.running||0}</div><div class="lbl">задач выполняется</div></div>
+    <div class="card"><div class="num">${t.done||0}</div><div class="lbl">задач сделано</div></div>
+    <div class="card"><div class="num">${t.error||0}</div><div class="lbl">задач с ошибкой</div></div>
+    <div class="card"><div class="num">${sum(l)}</div><div class="lbl">лидов в базе</div></div>
+    <div class="card"><div class="num">${o.outreach_pending}</div><div class="lbl">черновиков на аппруве</div></div>
+    <div class="card"><div class="num">${o.outreach_sent_today}</div><div class="lbl">отправлено сегодня</div></div>
+    <div class="card"><div class="num">${o.watched}</div><div class="lbl">товаров в мониторинге</div></div>
+    <div class="card"><div class="num">${o.facts}</div><div class="lbl">фактов в памяти</div></div>
+  </div>
+  <div class="panel">
+    <h3>Планировщик</h3>
+    <div class="row">
+      <span class="badge ${o.scheduler.enabled?'ok':'err'}">${o.scheduler.enabled?'включён':'выключен'}</span>
+      <span class="muted">рассылка каждые ${o.scheduler.outreach_minutes} мин • мониторинг каждые ${o.scheduler.monitoring_hours} ч</span>
+    </div>
+  </div>
+  <div class="panel">
+    <h3>Лиды по статусам</h3>
+    <div class="row">${Object.entries(l).map(([k,v])=>`<span class="badge">${esc(k)}: ${v}</span>`).join("") || '<span class="muted">пусто</span>'}</div>
+  </div>`;
+  autorefresh(10000);
+}
+
+/* ===== Агенты ===== */
+let modelsCache = null;
+async function rAgents(){
+  const [agents, models] = await Promise.all([api("/agents"), api("/models")]);
+  modelsCache = models;
+  const tierName = {cheap:"дешёвый ярус", strong:"сильный ярус", orchestrator:"оркестратор"};
+  view.innerHTML = `
+  <div class="panel">
+    <h3>Глобальные модели (ярусы)</h3>
+    <div class="muted" style="margin-bottom:10px">Агент без личной модели берёт модель своего яруса. Пусто = дефолт из .env. Применяется сразу.</div>
+    ${["cheap","strong","orchestrator"].map(t=>`
+      <div class="field">
+        <label>${tierName[t]} — дефолт: <span class="mono">${esc(models[t].default)}</span></label>
+        <div class="row">
+          <input type="text" id="tier-${t}" list="model-list" value="${esc(models[t].override)}" placeholder="${esc(models[t].default)}" style="max-width:420px">
+        </div>
+      </div>`).join("")}
+    <button class="btn" onclick="saveModels()">Сохранить модели</button>
+  </div>
+  <h3 style="margin:18px 4px 10px">Агенты (${agents.length})</h3>
+  ${agents.map(a=>`
+  <div class="agent" id="ag-${a.name}">
+    <div class="agent-head" onclick="this.parentElement.classList.toggle('open')">
+      <label class="switch" onclick="event.stopPropagation()">
+        <input type="checkbox" ${a.enabled?'checked':''} onchange="toggleAgent('${a.name}', this.checked)"><span></span>
+      </label>
+      <div style="flex:1">
+        <div class="title">${esc(a.title)} <span class="muted mono" style="font-weight:400">· ${esc(a.name)}</span></div>
+        <div class="muted" style="font-size:12px">${esc(a.description)}</div>
+      </div>
+      <span class="badge mono">${esc(a.model_effective)}</span>
+    </div>
+    <div class="agent-body">
+      <div class="field">
+        <label>Модель агента (пусто = модель яруса «${tierName[a.tier]}»: <span class="mono">${esc(a.model_default)}</span>)</label>
+        <input type="text" list="model-list" id="model-${a.name}" value="${esc(a.model_override)}" placeholder="${esc(a.model_default)}">
+      </div>
+      <div class="field">
+        <label>Системный промпт (пусто = стандартный, он показан ниже)</label>
+        <textarea id="prompt-${a.name}" placeholder="${esc(a.prompt_default)}">${esc(a.prompt_override)}</textarea>
+      </div>
+      ${a.tools.length ? `<div class="field"><label>Инструменты</label>
+        ${a.tools.map(t=>`
+        <div class="tool-line">
+          <label class="switch"><input type="checkbox" data-tool="${t.name}" data-agent="${a.name}" ${t.disabled?'':'checked'}><span></span></label>
+          <span class="mono">${esc(t.name)}</span><span class="muted">— ${esc(t.doc)}</span>
+        </div>`).join("")}</div>` : ""}
+      <div class="row" style="margin-top:8px">
+        <button class="btn" onclick="saveAgent('${a.name}')">Сохранить</button>
+        <button class="btn ghost" onclick="resetAgent('${a.name}')">Сбросить к дефолту</button>
+      </div>
+    </div>
+  </div>`).join("")}`;
+}
+window.saveModels = async () => {
+  const body = {};
+  for(const t of ["cheap","strong","orchestrator"]) body[t] = $("#tier-"+t).value.trim();
+  await api("/models", {method:"PUT", body});
+  toast("Модели сохранены — применяются сразу.");
+};
+window.toggleAgent = async (name, enabled) => {
+  try{ await api("/agents/"+name, {method:"PUT", body:{enabled}}); toast(`${name}: ${enabled?"включён":"выключен"}`); }
+  catch(e){ toast(e.message, true); }
+};
+window.saveAgent = async (name) => {
+  const disabled = [...document.querySelectorAll(`input[data-agent="${name}"]`)]
+    .filter(i=>!i.checked).map(i=>i.dataset.tool);
+  await api("/agents/"+name, {method:"PUT", body:{
+    model_override: $("#model-"+name).value.trim(),
+    prompt_override: $("#prompt-"+name).value.trim(),
+    disabled_tools: disabled,
+  }});
+  toast("Сохранено — действует со следующего запроса.");
+};
+window.resetAgent = async (name) => {
+  await api("/agents/"+name, {method:"PUT", body:{model_override:"", prompt_override:"", disabled_tools:[], enabled:true}});
+  toast("Сброшено к дефолту."); render();
+};
+
+/* ===== Задачи ===== */
+async function rTasks(){
+  const rows = await api("/tasks?limit=50");
+  const icon = s => ({pending:'<span class="badge muted">ждёт</span>',running:'<span class="badge warn">выполняется</span>',done:'<span class="badge ok">готово</span>',error:'<span class="badge err">ошибка</span>'}[s]||esc(s));
+  view.innerHTML = `<div class="panel"><h3>Задачи</h3>
+  ${rows.length?`<table><tr><th>#</th><th>Тип</th><th>Статус</th><th>Запрос</th><th>Когда</th></tr>
+    ${rows.map(r=>`
+    <tr class="clickable" onclick="const x=document.getElementById('task-${r.id}'); x.style.display = x.style.display==='none'?'':'none'">
+      <td>${r.id}</td><td class="mono">${esc(r.kind)}</td><td>${icon(r.status)}</td>
+      <td>${esc((r.request||"").slice(0,90))}</td><td class="muted">${dt(r.updated_at||r.created_at)}</td>
+    </tr>
+    <tr id="task-${r.id}" style="display:none"><td colspan="5"><div class="expand">${esc(r.result||"(результата ещё нет)")}</div></td></tr>`).join("")}
+  </table>`:'<div class="empty">Задач ещё не было</div>'}</div>`;
+  autorefresh(5000);
+}
+
+/* ===== Память ===== */
+async function rMemory(){
+  const m = await api("/memory");
+  view.innerHTML = `
+  <div class="panel">
+    <h3>Факты (${m.facts.length})</h3>
+    <div class="row" style="margin-bottom:10px">
+      <input type="text" id="new-fact" placeholder="Новый факт: «работаем только по Москве»…" style="flex:1;min-width:240px">
+      <button class="btn" onclick="addFact()">Добавить</button>
+    </div>
+    ${m.facts.length?`<table>${m.facts.map(f=>`
+      <tr><td class="muted" style="width:40px">#${f.id}</td><td>${esc(f.fact)}</td>
+      <td class="muted" style="width:90px">${esc(f.category)}</td>
+      <td style="width:40px"><button class="btn danger sm" onclick="delFact(${f.id})">✕</button></td></tr>`).join("")}</table>`
+      :'<div class="empty">Фактов пока нет</div>'}
+  </div>
+  <div class="panel">
+    <h3>Выжимка старой переписки</h3>
+    <div class="expand">${esc(m.summary.summary||"(пока пусто — выжимка появится, когда накопится история)")}</div>
+    <div class="muted" style="font-size:12px">обновлена: ${dt(m.summary.updated_at)} • сжато до сообщения #${m.summary.summarized_to}</div>
+  </div>
+  <div class="panel">
+    <h3>Поиск по архиву</h3>
+    <div class="row" style="margin-bottom:10px">
+      <input type="text" id="arch-q" placeholder="например: поставщики кофе" style="flex:1;min-width:240px" onkeydown="if(event.key==='Enter')searchArch()">
+      <button class="btn" onclick="searchArch()">Найти</button>
+    </div>
+    <div id="arch-res" class="muted">Архив — завершённые задачи и старые договорённости.</div>
+  </div>
+  <div class="panel">
+    <h3>Последние сообщения диалога</h3>
+    ${m.dialog.length?`<table>${m.dialog.map(d=>`
+      <tr><td class="muted" style="width:80px">${d.role==="user"?"Владелец":"Ассистент"}</td>
+      <td>${esc(d.content.slice(0,300))}</td><td class="muted" style="width:110px">${dt(d.created_at)}</td></tr>`).join("")}</table>`
+      :'<div class="empty">Диалога ещё не было</div>'}
+  </div>`;
+}
+window.addFact = async () => {
+  const v = $("#new-fact").value.trim();
+  if(!v) return;
+  await api("/memory/facts", {method:"POST", body:{fact:v}});
+  toast("Факт добавлен."); render();
+};
+window.delFact = async (id) => { await api("/memory/facts/"+id, {method:"DELETE"}); render(); };
+window.searchArch = async () => {
+  const q = $("#arch-q").value.trim();
+  const r = await api("/memory/archive?q="+encodeURIComponent(q));
+  $("#arch-res").innerHTML = r.results.length
+    ? r.results.map(x=>`<div class="expand">${esc(x)}</div>`).join("")
+    : '<div class="empty">Ничего не нашлось</div>';
+};
+
+/* ===== Лиды ===== */
+async function rLeads(){
+  const rows = await api("/leads");
+  const badge = s => ({new:"muted",queued:"warn",contacted:"",interested:"ok",question:"warn",declined:"err",spam:"err"}[s]??"");
+  view.innerHTML = `<div class="panel"><h3>Лиды (${rows.length})</h3>
+  ${rows.length?`<table><tr><th>#</th><th>Компания</th><th>Телефон</th><th>Ниша / город</th><th>Статус</th><th>Заметка</th></tr>
+    ${rows.map(r=>`<tr><td>${r.id}</td><td>${esc(r.name)}${r.website?` <a href="${esc(r.website)}" target="_blank">↗</a>`:""}</td>
+    <td class="mono">${r.phone?"+"+esc(r.phone):"—"}</td><td class="muted">${esc(r.niche||"")} ${esc(r.city||"")}</td>
+    <td><span class="badge ${badge(r.status)}">${esc(r.status)}</span></td><td class="muted">${esc((r.note||"").slice(0,80))}</td></tr>`).join("")}
+  </table>`:'<div class="empty">Лидов пока нет — запусти поиск клиентов через WhatsApp</div>'}</div>`;
+}
+
+/* ===== Рассылка ===== */
+async function rOutreach(){
+  const o = await api("/outreach");
+  view.innerHTML = `
+  <div class="cards">
+    <div class="card"><div class="num">${o.pending.length}</div><div class="lbl">ждут аппрува</div></div>
+    <div class="card"><div class="num">${o.counts.approved||0}</div><div class="lbl">в очереди отправки</div></div>
+    <div class="card"><div class="num">${o.sent_today}</div><div class="lbl">отправлено сегодня</div></div>
+    <div class="card"><div class="num">${o.counts.failed||0}</div><div class="lbl">не доставлено</div></div>
+  </div>
+  <div class="panel">
+    <h3>Черновики на аппруве</h3>
+    ${o.pending.length?`
+    <div class="row" style="margin-bottom:12px">
+      <button class="btn" onclick="approveAll()">Одобрить все (${o.pending.length})</button>
+      <button class="btn ghost" onclick="runJob('outreach')">Запустить отправку сейчас</button>
+    </div>
+    ${o.pending.map(p=>`
+    <div class="panel" style="background:var(--panel2)">
+      <div class="row" style="justify-content:space-between;margin-bottom:6px">
+        <b>#${p.id} → ${esc(p.name)} <span class="mono muted">+${esc(p.phone)}</span></b>
+        <span class="row">
+          <button class="btn sm" onclick="approveMsg(${p.id})">Одобрить</button>
+          <button class="btn danger sm" onclick="rejectMsg(${p.id})">Отклонить</button>
+        </span>
+      </div>
+      <div>${esc(p.text)}</div>
+    </div>`).join("")}`
+    :'<div class="empty">Пусто. Черновики появятся после команды «подготовь рассылку» в WhatsApp.</div>'}
+  </div>
+  <div class="panel">
+    <h3>Последние сообщения</h3>
+    ${o.recent.length?`<table><tr><th>#</th><th>Кому</th><th>Статус</th><th>Текст</th><th>Когда</th></tr>
+    ${o.recent.map(r=>`<tr><td>${r.id}</td><td>${esc(r.name)}</td>
+    <td><span class="badge ${r.status==='sent'?'ok':r.status==='failed'?'err':r.status==='approved'?'warn':'muted'}">${esc(r.status)}</span>${r.error?`<div class="muted" style="font-size:11px">${esc(r.error.slice(0,60))}</div>`:""}</td>
+    <td class="muted">${esc(r.text.slice(0,70))}…</td><td class="muted">${dt(r.sent_at)}</td></tr>`).join("")}</table>`
+    :'<div class="empty">История пуста</div>'}
+  </div>`;
+  autorefresh(10000);
+}
+window.approveMsg = async id => { const r = await api(`/outreach/${id}/approve`, {method:"POST"}); toast(r.message); render(); };
+window.rejectMsg  = async id => { const r = await api(`/outreach/${id}/reject`, {method:"POST"}); toast(r.message); render(); };
+window.approveAll = async () => { const r = await api("/outreach/approve-all", {method:"POST"}); toast(r.message); render(); };
+window.runJob = async job => { const r = await api("/jobs/"+job, {method:"POST"}); toast(r.message); };
+
+/* ===== Мониторинг ===== */
+async function rWatch(){
+  const rows = await api("/watched");
+  view.innerHTML = `<div class="panel">
+  <div class="row" style="justify-content:space-between;margin-bottom:10px">
+    <h3 style="margin:0">Мониторинг цен (${rows.length})</h3>
+    <button class="btn ghost" onclick="runJob('monitoring')">Проверить все сейчас</button>
+  </div>
+  ${rows.length?`<table><tr><th>#</th><th>Товар</th><th>Цена</th><th>Наличие</th><th>Проверен</th><th></th></tr>
+    ${rows.map(r=>`<tr><td>${r.id}</td><td><a href="${esc(r.url)}" target="_blank">${esc(r.title)}</a> <span class="badge muted">${esc(r.source)}</span></td>
+    <td>${r.last_price!=null?Math.round(r.last_price)+" ₽":"—"}</td>
+    <td>${r.available==null?"—":r.available?'<span class="badge ok">есть</span>':'<span class="badge err">нет</span>'}</td>
+    <td class="muted">${dt(r.last_checked)}</td>
+    <td><button class="btn danger sm" onclick="unwatch(${r.id})">убрать</button></td></tr>`).join("")}
+  </table>`:'<div class="empty">Список пуст. Добавь через WhatsApp: «следи за ценой <ссылка>»</div>'}</div>`;
+}
+window.unwatch = async id => { const r = await api("/watched/"+id, {method:"DELETE"}); toast(r.message); render(); };
+
+/* ===== Инструменты ===== */
+async function rTools(){
+  const tools = await api("/tools");
+  view.innerHTML = `<div class="panel"><h3>Инструменты и подключения</h3>
+  <table><tr><th>Инструмент</th><th>Статус</th><th>Детали</th></tr>
+  ${tools.map(t=>`<tr><td><b>${esc(t.title)}</b> <span class="mono muted">${esc(t.name)}</span></td>
+  <td>${t.ok?'<span class="badge ok">работает</span>':'<span class="badge err">не настроен</span>'}</td>
+  <td class="muted">${esc(t.detail)}</td></tr>`).join("")}</table>
+  <div class="muted" style="margin-top:12px">Ключи задаются в .env на поде (InstaPods → Files), после правки — рестарт пода.
+  Какие инструменты доступны какому агенту — настраивается на вкладке «Агенты».</div></div>`;
+}
+
+/* ===== Настройки ===== */
+async function rSettings(){
+  const s = await api("/settings");
+  const f = (key, label) => `
+    <div class="field"><label>${label} (дефолт: ${s[key].default})</label>
+    <input type="number" id="set-${key}" value="${s[key].effective}" style="max-width:200px"></div>`;
+  view.innerHTML = `
+  <div class="panel">
+    <h3>Лимиты рассылки</h3>
+    <div class="muted" style="margin-bottom:10px">Применяются сразу, без рестарта. Не задирай — WhatsApp банит за спам-паттерны.</div>
+    ${f("outreach_daily_limit","Максимум сообщений в день")}
+    ${f("outreach_batch_per_tick","Сообщений за один тик")}
+    ${f("outreach_min_delay_s","Минимальная пауза между сообщениями, сек")}
+    ${f("outreach_max_delay_s","Максимальная пауза между сообщениями, сек")}
+    <button class="btn" onclick="saveSettings()">Сохранить</button>
+  </div>
+  <div class="panel">
+    <h3>Системное (.env, меняется на поде + рестарт)</h3>
+    <table>
+      <tr><td class="muted">Телефон владельца</td><td class="mono">${esc(s.info.owner_phone||"не задан")}</td></tr>
+      <tr><td class="muted">Планировщик</td><td>${s.info.scheduler_enabled?"включён":"выключен"} — рассылка ${s.info.outreach_tick_minutes} мин, мониторинг ${s.info.monitoring_tick_hours} ч</td></tr>
+      <tr><td class="muted">Папка данных</td><td class="mono">${esc(s.info.data_dir)}</td></tr>
+    </table>
+  </div>`;
+}
+window.saveSettings = async () => {
+  const body = {};
+  for(const k of ["outreach_daily_limit","outreach_batch_per_tick","outreach_min_delay_s","outreach_max_delay_s"])
+    body[k] = parseInt($("#set-"+k).value, 10);
+  await api("/settings", {method:"PUT", body});
+  toast("Лимиты сохранены — действуют сразу.");
+};
+
+nav(); render();
+</script>
+</body>
+</html>

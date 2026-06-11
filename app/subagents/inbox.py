@@ -4,11 +4,10 @@ import logging
 from typing import Literal
 
 from pydantic import BaseModel
-from pydantic_ai import Agent
 
 from .. import db, wa
+from ..agents_registry import AgentSpec, build, register
 from ..config import normalize_phone
-from ..llm import cheap_model
 
 log = logging.getLogger(__name__)
 
@@ -26,16 +25,23 @@ class InboxResult(BaseModel):
     suggested_reply: str
 
 
-_classifier = Agent(
-    cheap_model(),
-    output_type=InboxResult,
-    system_prompt=(
-        "Ты разбираешь ответ потенциального клиента на холодное сообщение в WhatsApp.\n"
-        "Классифицируй: interested (интерес/готов обсуждать), question (задаёт вопрос), "
-        "declined (отказ), spam (мусор/бот), other.\n"
-        "И предложи короткий человеческий ответ от имени владельца (по-русски, 1–3 предложения). "
-        "Для отказа — вежливое завершение. Для спама suggested_reply оставь пустым."
-    ),
+CLASSIFIER_PROMPT = (
+    "Ты разбираешь ответ потенциального клиента на холодное сообщение в WhatsApp.\n"
+    "Классифицируй: interested (интерес/готов обсуждать), question (задаёт вопрос), "
+    "declined (отказ), spam (мусор/бот), other.\n"
+    "И предложи короткий человеческий ответ от имени владельца (по-русски, 1–3 предложения). "
+    "Для отказа — вежливое завершение. Для спама suggested_reply оставь пустым."
+)
+
+register(
+    AgentSpec(
+        name="inbox_classifier",
+        title="Входящие от клиентов",
+        tier="cheap",
+        prompt=CLASSIFIER_PROMPT,
+        description="Классифицирует ответы лидов и предлагает ответ владельцу.",
+        output_type=InboxResult,
+    )
 )
 
 
@@ -71,7 +77,11 @@ async def handle_incoming(chat_id: str, text: str) -> None:
     )
 
     try:
-        result = (await _classifier.run(f"Переписка:\n{history}\n\nНовый ответ клиента:\n{text}")).output
+        classifier, enabled = await build("inbox_classifier")
+        if not enabled:
+            await wa.notify_owner(f"💬 Ответ от {row['name']} (+{phone}):\n«{text[:500]}»")
+            return
+        result = (await classifier.run(f"Переписка:\n{history}\n\nНовый ответ клиента:\n{text}")).output
     except Exception:
         log.exception("inbox classification failed")
         await wa.notify_owner(f"💬 Ответ от {row['name']} (+{phone}):\n«{text[:500]}»")

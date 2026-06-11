@@ -1,10 +1,9 @@
-"""ProductAgent: поиск товаров/поставщиков/новинок. Дешёвая модель + инструменты."""
+"""ProductAgent: поиск товаров/поставщиков/новинок."""
 
 from pydantic import BaseModel
-from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
-from ..llm import cheap_model
+from ..agents_registry import AgentSpec, build, register
 from ..tools import scraper, sheets, web_search, wildberries
 
 
@@ -35,16 +34,12 @@ MODE_PROMPTS = {
     "new": "Найди свежие/новые предложения по критериям «{query}»: новинки, недавно появившиеся позиции.",
 }
 
-_agent = Agent(cheap_model(), output_type=ProductReport, system_prompt=SYSTEM, retries=2)
 
-
-@_agent.tool_plain
 async def search_web(query: str) -> str:
     """Веб-поиск (Google). Возвращает заголовки, ссылки, сниппеты."""
     return web_search.format_results(await web_search.search(query))
 
 
-@_agent.tool_plain
 async def wb_search(query: str) -> str:
     """Поиск товаров на Wildberries: название, бренд, цена, рейтинг, ссылка."""
     try:
@@ -53,7 +48,6 @@ async def wb_search(query: str) -> str:
         return f"WB недоступен: {e}"
 
 
-@_agent.tool_plain
 async def fetch_page(url: str) -> str:
     """Открыть страницу и получить её текст (для цен и контактов с сайтов)."""
     try:
@@ -62,9 +56,25 @@ async def fetch_page(url: str) -> str:
         return f"Не удалось открыть {url}: {e}"
 
 
+register(
+    AgentSpec(
+        name="product",
+        title="Поиск товаров",
+        tier="cheap",
+        prompt=SYSTEM,
+        description="Сравнение цен, поиск поставщиков, новинки. Результат — таблица + сводка.",
+        output_type=ProductReport,
+        tools=[search_web, wb_search, fetch_page],
+    )
+)
+
+
 async def run(query: str, mode: str = "compare") -> str:
+    agent, enabled = await build("product")
+    if not enabled:
+        return "Агент поиска товаров выключен в админке."
     prompt = MODE_PROMPTS.get(mode, MODE_PROMPTS["compare"]).format(query=query)
-    result = await _agent.run(prompt, usage_limits=UsageLimits(request_limit=15))
+    result = await agent.run(prompt, usage_limits=UsageLimits(request_limit=15))
     report = result.output
 
     summary = report.summary

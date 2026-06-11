@@ -4,39 +4,64 @@ import asyncio
 import logging
 import random
 
-from pydantic_ai import Agent
-
-from .. import db, wa
+from .. import db, settings_store, wa
+from ..agents_registry import AgentSpec, build, register
 from ..config import phone_to_chat_id, settings
-from ..llm import cheap_model, strong_model
 
 log = logging.getLogger(__name__)
 
-_drafter = Agent(
-    cheap_model(),
-    output_type=str,
-    system_prompt=(
-        "Ты пишешь ПЕРВОЕ сообщение компании в WhatsApp от имени владельца малого бизнеса.\n"
-        "Требования: 2–4 предложения, по-человечески, без канцелярита и спам-штампов "
-        "(никаких «уникальное предложение», «взаимовыгодное сотрудничество»). "
-        "Персонализируй под компанию (используй заметку о ней). Одно конкретное предложение "
-        "и лёгкий вопрос в конце. Без эмодзи-спама. Верни ТОЛЬКО текст сообщения."
-    ),
+DRAFTER_PROMPT = (
+    "Ты пишешь ПЕРВОЕ сообщение компании в WhatsApp от имени владельца малого бизнеса.\n"
+    "Требования: 2–4 предложения, по-человечески, без канцелярита и спам-штампов "
+    "(никаких «уникальное предложение», «взаимовыгодное сотрудничество»). "
+    "Персонализируй под компанию (используй заметку о ней). Одно конкретное предложение "
+    "и лёгкий вопрос в конце. Без эмодзи-спама. Верни ТОЛЬКО текст сообщения."
 )
 
-_reviewer = Agent(
-    strong_model(),
-    output_type=str,
-    system_prompt=(
-        "Ты — строгий редактор холодных сообщений в WhatsApp. Тебе дают черновик.\n"
-        "Сделай его лучше: естественный язык, конкретика, не похоже на спам, 2–4 предложения, "
-        "сохрани суть предложения. Верни ТОЛЬКО финальный текст сообщения, без комментариев."
-    ),
+REVIEWER_PROMPT = (
+    "Ты — строгий редактор холодных сообщений в WhatsApp. Тебе дают черновик.\n"
+    "Сделай его лучше: естественный язык, конкретика, не похоже на спам, 2–4 предложения, "
+    "сохрани суть предложения. Верни ТОЛЬКО финальный текст сообщения, без комментариев."
 )
+
+register(
+    AgentSpec(
+        name="outreach_drafter",
+        title="Рассылка: черновик",
+        tier="cheap",
+        prompt=DRAFTER_PROMPT,
+        description="Пишет первое сообщение лиду (дёшево, персонализированно).",
+    )
+)
+
+register(
+    AgentSpec(
+        name="outreach_reviewer",
+        title="Рассылка: редактор",
+        tier="strong",
+        prompt=REVIEWER_PROMPT,
+        description="Вычитывает черновик сильной моделью перед аппрувом владельца.",
+    )
+)
+
+
+async def _limits() -> dict[str, int]:
+    """Лимиты рассылки: значения из админки, иначе из .env."""
+    return {
+        "daily": await settings_store.get_int("outreach_daily_limit", settings.outreach_daily_limit),
+        "batch": await settings_store.get_int("outreach_batch_per_tick", settings.outreach_batch_per_tick),
+        "min_delay": await settings_store.get_int("outreach_min_delay_s", settings.outreach_min_delay_s),
+        "max_delay": await settings_store.get_int("outreach_max_delay_s", settings.outreach_max_delay_s),
+    }
 
 
 async def prepare(offer: str, niche: str = "", city: str = "", limit: int = 10) -> str:
     """Сгенерировать черновики для новых лидов и прислать владельцу на аппрув."""
+    drafter, drafter_on = await build("outreach_drafter")
+    reviewer, reviewer_on = await build("outreach_reviewer")
+    if not drafter_on:
+        return "Агент рассылки выключен в админке."
+
     query = """
         SELECT l.id AS lead_id, c.name, c.phone, c.niche, c.city, c.note
         FROM leads l JOIN companies c ON c.id = l.company_id
@@ -63,8 +88,9 @@ async def prepare(offer: str, niche: str = "", city: str = "", limit: int = 10) 
             f"Заметка: {r['note'] or 'нет'}.\n"
             f"Что предлагаем: {offer}"
         )
-        draft = (await _drafter.run(context)).output.strip()
-        final = (await _reviewer.run(f"{context}\n\nЧерновик:\n{draft}")).output.strip()
+        final = (await drafter.run(context)).output.strip()
+        if reviewer_on:
+            final = (await reviewer.run(f"{context}\n\nЧерновик:\n{final}")).output.strip()
         msg_id = await db.fetchval(
             "INSERT INTO outreach_messages (lead_id, text) VALUES ($1, $2) RETURNING id",
             r["lead_id"],
@@ -72,12 +98,13 @@ async def prepare(offer: str, niche: str = "", city: str = "", limit: int = 10) 
         )
         drafts.append(f"#{msg_id} → {r['name']} ({r['phone']}):\n{final}")
 
+    lim = await _limits()
     return (
         f"Подготовил {len(drafts)} черновиков (дешёвая писала, сильная вычитала):\n\n"
         + "\n\n".join(drafts)
         + "\n\nОтветь: «одобри все», «одобри 12,13» или «отклони 14». "
-        f"После аппрува уйдут пачками по {settings.outreach_batch_per_tick} каждые ~15 мин, "
-        f"лимит {settings.outreach_daily_limit}/день."
+        f"После аппрува уйдут пачками по {lim['batch']} каждые ~15 мин, "
+        f"лимит {lim['daily']}/день."
     )
 
 
@@ -132,9 +159,10 @@ async def _sent_today() -> int:
 
 
 async def tick() -> None:
-    """Отправить очередную пачку одобренных сообщений (зовётся n8n по расписанию)."""
+    """Отправить очередную пачку одобренных сообщений (зовётся планировщиком)."""
+    lim = await _limits()
     sent_today = await _sent_today()
-    remaining = settings.outreach_daily_limit - sent_today
+    remaining = lim["daily"] - sent_today
     if remaining <= 0:
         return
 
@@ -147,12 +175,10 @@ async def tick() -> None:
         ORDER BY om.id
         LIMIT $1
         """,
-        min(settings.outreach_batch_per_tick, remaining),
+        min(lim["batch"], remaining),
     )
     for row in batch:
-        await asyncio.sleep(
-            random.randint(settings.outreach_min_delay_s, settings.outreach_max_delay_s)
-        )
+        await asyncio.sleep(random.randint(lim["min_delay"], lim["max_delay"]))
         chat_id = phone_to_chat_id(row["phone"])
         try:
             await wa.outreach.send_text(chat_id, row["text"])

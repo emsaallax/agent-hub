@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     outreach_min_delay_s: int = 45
     outreach_max_delay_s: int = 180
 
+    # Веб-админка (/admin). Пусто = админка выключена.
+    admin_password: str = ""
+
     # Встроенный планировщик (замена n8n)
     scheduler_enabled: bool = True
     outreach_tick_minutes: int = 15

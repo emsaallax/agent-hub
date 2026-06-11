@@ -5,11 +5,10 @@ import asyncio
 import logging
 from typing import Literal
 
-from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
 from . import db, memory, monitoring, tasks, wa
-from .llm import orchestrator_model
+from .agents_registry import AgentSpec, build, register
 from .subagents import code, lead, outreach, product
 
 log = logging.getLogger(__name__)
@@ -33,14 +32,11 @@ SYSTEM = """Ты — личный ассистент-оркестратор вл
 - Для справки о прошлых делах используй search_memory.
 - Если просят что-то вне твоих инструментов — скажи прямо, что пока не умеешь, и предложи ближайшую альтернативу."""
 
-orchestrator = Agent(orchestrator_model(), output_type=str, system_prompt=SYSTEM, retries=2)
-
 _lock = asyncio.Lock()
 
 
 # ===== Товары =====
 
-@orchestrator.tool_plain
 async def start_product_search(
     query: str, mode: Literal["compare", "suppliers", "new"] = "compare"
 ) -> str:
@@ -50,25 +46,21 @@ async def start_product_search(
     return f"Задача #{task_id} запущена (поиск товаров: {query}). Результат придёт сообщением."
 
 
-@orchestrator.tool_plain
 async def watch_product(url: str, title: str = "") -> str:
     """Добавить товар в мониторинг цен по ссылке (WB или любой сайт)."""
     return await monitoring.add_watch(url, title)
 
 
-@orchestrator.tool_plain
 async def list_watched_products() -> str:
     """Показать список товаров в мониторинге цен."""
     return await monitoring.list_watched()
 
 
-@orchestrator.tool_plain
 async def unwatch_product(product_id: int) -> str:
     """Убрать товар из мониторинга по id."""
     return await monitoring.unwatch(product_id)
 
 
-@orchestrator.tool_plain
 async def run_price_check_now() -> str:
     """Запустить внеплановую проверку всех отслеживаемых цен прямо сейчас."""
     tasks.spawn(monitoring.tick())
@@ -77,7 +69,6 @@ async def run_price_check_now() -> str:
 
 # ===== Клиенты =====
 
-@orchestrator.tool_plain
 async def start_lead_search(niche: str, city: str, count: int = 20) -> str:
     """Запустить фоновый поиск потенциальных клиентов: компании с телефонами по нише и городу."""
     task_id = await tasks.create("lead_search", f"{niche} / {city} / {count}")
@@ -85,7 +76,6 @@ async def start_lead_search(niche: str, city: str, count: int = 20) -> str:
     return f"Задача #{task_id} запущена (клиенты: {niche}, {city}). Результат придёт сообщением."
 
 
-@orchestrator.tool_plain
 async def lead_overview() -> str:
     """Сводка по лидам: сколько в каждом статусе."""
     rows = await db.fetch("SELECT status, count(*) AS n FROM leads GROUP BY status ORDER BY n DESC")
@@ -100,7 +90,6 @@ async def lead_overview() -> str:
 
 # ===== Рассылка =====
 
-@orchestrator.tool_plain
 async def prepare_outreach(offer: str, niche: str = "", city: str = "", limit: int = 10) -> str:
     """Подготовить черновики первых сообщений новым лидам. offer — что предлагаем клиентам (своими словами). Черновики придут владельцу на аппрув."""
     task_id = await tasks.create("outreach_prepare", f"{offer} ({niche} {city}, {limit})")
@@ -108,25 +97,21 @@ async def prepare_outreach(offer: str, niche: str = "", city: str = "", limit: i
     return f"Задача #{task_id}: готовлю черновики, пришлю их на аппрув."
 
 
-@orchestrator.tool_plain
 async def list_pending_outreach() -> str:
     """Показать черновики рассылки, ожидающие аппрува."""
     return await outreach.list_pending()
 
 
-@orchestrator.tool_plain
 async def approve_outreach(ids: list[int] | None = None) -> str:
     """Одобрить черновики рассылки. ids — номера черновиков; пустой список или None = одобрить все ожидающие."""
     return await outreach.approve(ids or [])
 
 
-@orchestrator.tool_plain
 async def reject_outreach(ids: list[int]) -> str:
     """Отклонить черновики рассылки по номерам."""
     return await outreach.reject(ids)
 
 
-@orchestrator.tool_plain
 async def send_to_lead(lead_id: int, text: str) -> str:
     """Отправить конкретному лиду сообщение с рассыльного номера (например, ответ на его вопрос)."""
     return await outreach.send_to_lead(lead_id, text)
@@ -134,7 +119,6 @@ async def send_to_lead(lead_id: int, text: str) -> str:
 
 # ===== Код =====
 
-@orchestrator.tool_plain
 async def start_code_task(description: str) -> str:
     """Запустить кодовую задачу: дешёвая модель пишет код, сильная ревьюит (до 3 итераций). Файлы лягут в data/code/."""
     task_id = await tasks.create("code", description)
@@ -144,7 +128,6 @@ async def start_code_task(description: str) -> str:
 
 # ===== Реклама (заглушка в реестре) =====
 
-@orchestrator.tool_plain
 async def start_ads_task(description: str) -> str:
     """Модуль рекламы (VK Ads / Яндекс.Директ). Пока не реализован."""
     return (
@@ -155,7 +138,6 @@ async def start_ads_task(description: str) -> str:
 
 # ===== Задачи и память =====
 
-@orchestrator.tool_plain
 async def get_tasks(limit: int = 5) -> str:
     """Статусы последних задач."""
     rows = await db.fetch(
@@ -169,18 +151,36 @@ async def get_tasks(limit: int = 5) -> str:
     )
 
 
-@orchestrator.tool_plain
 async def search_memory(query: str) -> str:
     """Поиск по архиву прошлых задач и договорённостей."""
     results = await memory.search_archive(query)
     return "\n\n".join(results) if results else "В архиве ничего не нашлось."
 
 
-@orchestrator.tool_plain
 async def remember(fact: str) -> str:
     """Запомнить важный факт навсегда (владелец явно попросил запомнить)."""
     await db.execute("INSERT INTO memory_facts (fact, category) VALUES ($1, 'manual')", fact)
     return "Запомнил."
+
+
+register(
+    AgentSpec(
+        name="orchestrator",
+        title="Оркестратор",
+        tier="orchestrator",
+        prompt=SYSTEM,
+        description="Главный агент: принимает сообщения владельца и раздаёт задачи под-агентам.",
+        tools=[
+            start_product_search, watch_product, list_watched_products,
+            unwatch_product, run_price_check_now,
+            start_lead_search, lead_overview,
+            prepare_outreach, list_pending_outreach, approve_outreach,
+            reject_outreach, send_to_lead,
+            start_code_task, start_ads_task,
+            get_tasks, search_memory, remember,
+        ],
+    )
+)
 
 
 # ===== Главный цикл =====
@@ -191,6 +191,7 @@ async def handle_owner_message(text: str) -> None:
         await memory.add_message("user", text)
         prompt = f"{context}\n\n---\nНовое сообщение владельца:\n{text}"
         try:
+            orchestrator, _ = await build("orchestrator")
             result = await orchestrator.run(prompt, usage_limits=UsageLimits(request_limit=12))
             reply = result.output.strip() or "Принял."
         except Exception as e:

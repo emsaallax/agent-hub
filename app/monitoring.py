@@ -1,14 +1,13 @@
-"""Мониторинг цен и наличия по отслеживаемому списку. Тикается n8n по расписанию."""
+"""Мониторинг цен и наличия по отслеживаемому списку. Тикается планировщиком."""
 
 import asyncio
 import logging
 import random
 
 from pydantic import BaseModel
-from pydantic_ai import Agent
 
 from . import db, wa
-from .llm import cheap_model
+from .agents_registry import AgentSpec, build, register
 from .tools import scraper, wildberries
 
 log = logging.getLogger(__name__)
@@ -19,13 +18,18 @@ class PriceCheck(BaseModel):
     available: bool
 
 
-_extractor = Agent(
-    cheap_model(),
-    output_type=PriceCheck,
-    system_prompt=(
-        "Из текста страницы товара извлеки текущую цену (число в рублях, если валюта не указана) "
-        "и наличие товара. Если цена не видна — price=null. Если явно «нет в наличии» — available=false."
-    ),
+register(
+    AgentSpec(
+        name="price_extractor",
+        title="Мониторинг: парсер цен",
+        tier="cheap",
+        prompt=(
+            "Из текста страницы товара извлеки текущую цену (число в рублях, если валюта не указана) "
+            "и наличие товара. Если цена не видна — price=null. Если явно «нет в наличии» — available=false."
+        ),
+        description="Достаёт цену и наличие из текста страницы (для не-WB сайтов).",
+        output_type=PriceCheck,
+    )
 )
 
 
@@ -60,8 +64,11 @@ async def _check_one(row) -> str | None:
             if nm:
                 price, available = await wildberries.price_by_nm(nm)
         else:
+            extractor, enabled = await build("price_extractor")
+            if not enabled:
+                return None
             text = await scraper.fetch_text(row["url"], max_chars=5000)
-            result = (await _extractor.run(text)).output
+            result = (await extractor.run(text)).output
             price, available = result.price, result.available
     except Exception as e:
         log.warning("price check failed for %s: %s", row["url"], e)

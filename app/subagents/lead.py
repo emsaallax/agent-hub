@@ -1,12 +1,11 @@
 """LeadAgent: анализ рынка — компании с контактами по нише и городу."""
 
 from pydantic import BaseModel
-from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
 from .. import db
+from ..agents_registry import AgentSpec, build, register
 from ..config import normalize_phone
-from ..llm import cheap_model
 from ..tools import scraper, sheets, twogis, web_search
 
 
@@ -24,17 +23,14 @@ class LeadReport(BaseModel):
 
 SYSTEM = (
     "Ты — агент поиска потенциальных клиентов (компаний) для владельца бизнеса. По-русски.\n"
-    "Инструменты: twogis (организации с телефонами по нише и городу — используй первым), "
+    "Инструменты: twogis_search (организации с телефонами по нише и городу — используй первым), "
     "search_web (общий поиск), fetch_page (контакты с сайтов).\n"
     "Цель: компании с РАБОЧИМИ телефонами. Телефон — только цифры с кодом страны (7...). "
     "Не выдумывай контакты — только из инструментов. В note пиши зацепку: чем компания живёт, "
     "что ей можно предложить."
 )
 
-_agent = Agent(cheap_model(), output_type=LeadReport, system_prompt=SYSTEM, retries=2)
 
-
-@_agent.tool_plain
 async def twogis_search(niche: str, city: str) -> str:
     """Организации в 2GIS по нише и городу: название, телефон, сайт, адрес."""
     try:
@@ -43,19 +39,30 @@ async def twogis_search(niche: str, city: str) -> str:
         return f"2GIS недоступен: {e}"
 
 
-@_agent.tool_plain
 async def search_web(query: str) -> str:
     """Веб-поиск (Google)."""
     return web_search.format_results(await web_search.search(query))
 
 
-@_agent.tool_plain
 async def fetch_page(url: str) -> str:
     """Открыть страницу сайта (контакты, описание компании)."""
     try:
         return await scraper.fetch_text(url)
     except Exception as e:
         return f"Не удалось открыть {url}: {e}"
+
+
+register(
+    AgentSpec(
+        name="lead",
+        title="Поиск клиентов",
+        tier="cheap",
+        prompt=SYSTEM,
+        description="Компании с телефонами по нише и городу (2GIS + веб) → база + таблица.",
+        output_type=LeadReport,
+        tools=[twogis_search, search_web, fetch_page],
+    )
+)
 
 
 async def _upsert_company(c: CompanyOut, niche: str, city: str) -> bool:
@@ -86,11 +93,14 @@ async def _upsert_company(c: CompanyOut, niche: str, city: str) -> bool:
 
 
 async def run(niche: str, city: str, count: int = 20) -> str:
+    agent, enabled = await build("lead")
+    if not enabled:
+        return "Агент поиска клиентов выключен в админке."
     prompt = (
         f"Найди до {count} компаний: ниша «{niche}», город «{city}». "
         f"Обязательно телефоны. Начни с 2GIS, добери вебом, если мало."
     )
-    result = await _agent.run(prompt, usage_limits=UsageLimits(request_limit=15))
+    result = await agent.run(prompt, usage_limits=UsageLimits(request_limit=15))
     report = result.output
 
     new_count = 0

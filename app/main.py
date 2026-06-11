@@ -4,9 +4,9 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
 
-from . import db, monitoring, orchestrator, tasks
+from . import admin, db, monitoring, orchestrator, tasks
 from .config import settings
-from .subagents import inbox, outreach
+from .subagents import code, inbox, lead, outreach, product  # noqa: F401 — регистрация агентов в реестре
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -23,6 +23,8 @@ async def lifespan(app: FastAPI):
         log.warning("OPENROUTER_API_KEY не задан — LLM-запросы будут падать!")
     if not settings.green_api_id_instance:
         log.warning("GREEN_API_ID_INSTANCE не задан — WhatsApp не подключён!")
+    if not settings.admin_password:
+        log.warning("ADMIN_PASSWORD не задан — веб-админка /admin выключена.")
     if settings.scheduler_enabled:
         scheduler.add_job(
             outreach.tick, "interval",
@@ -46,11 +48,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="agent-hub", lifespan=lifespan)
+app.include_router(admin.router)
+app.include_router(admin.page_router)
 
 
 @app.get("/")
 async def root():
-    return {"service": "agent-hub", "ok": True}
+    return {"service": "agent-hub", "ok": True, "admin": "/admin"}
 
 
 @app.get("/health")

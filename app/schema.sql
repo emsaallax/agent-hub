@@ -36,6 +36,23 @@ CREATE TABLE IF NOT EXISTS memory_archive (
 );
 CREATE INDEX IF NOT EXISTS memory_archive_tsv_idx ON memory_archive USING GIN (tsv);
 
+-- ===== Настройки и конфиги агентов (редактируются из админки) =====
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS agent_configs (
+    name TEXT PRIMARY KEY,
+    model_override TEXT NOT NULL DEFAULT '',
+    prompt_override TEXT NOT NULL DEFAULT '',
+    disabled_tools JSONB NOT NULL DEFAULT '[]'::jsonb,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ===== Задачи оркестратора =====
 
 CREATE TABLE IF NOT EXISTS tasks (

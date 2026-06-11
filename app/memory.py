@@ -6,10 +6,8 @@
 
 import logging
 
-from pydantic_ai import Agent
-
 from . import db
-from .llm import cheap_model
+from .agents_registry import AgentSpec, build, register
 
 log = logging.getLogger(__name__)
 
@@ -18,25 +16,34 @@ SUMMARIZE_AFTER = 40  # при скольких несжатых сообщен�
 MAX_FACTS = 100
 MSG_CAP = 1500        # обрезка одного сообщения в контексте
 
-_summarizer = Agent(
-    cheap_model(),
-    output_type=str,
-    system_prompt=(
-        "Ты сжимаешь историю диалога владельца с его ассистентом в краткую выжимку. "
-        "Сохрани: принятые решения, договорённости, незакрытые задачи, важные цифры и имена. "
-        "Убери воду и приветствия. Не больше 120 слов. Пиши по-русски."
-    ),
+register(
+    AgentSpec(
+        name="memory_summarizer",
+        title="Память: выжимка диалога",
+        tier="cheap",
+        prompt=(
+            "Ты сжимаешь историю диалога владельца с его ассистентом в краткую выжимку. "
+            "Сохрани: принятые решения, договорённости, незакрытые задачи, важные цифры и имена. "
+            "Убери воду и приветствия. Не больше 120 слов. Пиши по-русски."
+        ),
+        description="Сжимает старую переписку в rolling summary (экономия токенов).",
+    )
 )
 
-_fact_extractor = Agent(
-    cheap_model(),
-    output_type=list[str],
-    system_prompt=(
-        "Из фрагмента диалога выдели НОВЫЕ долгосрочные факты о владельце и его бизнесе: "
-        "чем занимается, предпочтения, постоянные инструкции, важные контакты. "
-        "Только то, что пригодится через недели. Не дублируй уже известные факты. "
-        "Каждый факт — одна короткая строка по-русски. Если новых фактов нет — верни пустой список."
-    ),
+register(
+    AgentSpec(
+        name="fact_extractor",
+        title="Память: извлечение фактов",
+        tier="cheap",
+        prompt=(
+            "Из фрагмента диалога выдели НОВЫЕ долгосрочные факты о владельце и его бизнесе: "
+            "чем занимается, предпочтения, постоянные инструкции, важные контакты. "
+            "Только то, что пригодится через недели. Не дублируй уже известные факты. "
+            "Каждый факт — одна короткая строка по-русски. Если новых фактов нет — верни пустой список."
+        ),
+        description="Достаёт долгосрочные факты из диалога в memory_facts.",
+        output_type=list[str],
+    )
 )
 
 
@@ -119,11 +126,14 @@ async def _extract_facts() -> None:
         f"{'Владелец' if r['role'] == 'user' else 'Ассистент'}: {r['content'][:800]}"
         for r in reversed(recent)
     )
+    extractor, enabled = await build("fact_extractor")
+    if not enabled:
+        return
     known = await get_facts()
     prompt = (
         "Уже известные факты:\n" + "\n".join(f"- {f}" for f in known[:40]) + "\n\nФрагмент диалога:\n" + dialog
     )
-    result = await _fact_extractor.run(prompt)
+    result = await extractor.run(prompt)
     for fact in result.output[:3]:
         fact = fact.strip()
         if fact:
@@ -144,8 +154,11 @@ async def _maybe_summarize() -> None:
         f"{'Владелец' if r['role'] == 'user' else 'Ассистент'}: {r['content'][:800]}"
         for r in to_compress
     )
+    summarizer, enabled = await build("memory_summarizer")
+    if not enabled:
+        return
     prompt = f"Текущая выжимка:\n{state['summary'] or '(пусто)'}\n\nНовая часть диалога:\n{dialog}\n\nОбнови выжимку."
-    result = await _summarizer.run(prompt)
+    result = await summarizer.run(prompt)
     await db.execute(
         "UPDATE dialog_state SET summary = $1, summarized_to = $2, updated_at = now() WHERE id = 1",
         result.output.strip()[:3000],
