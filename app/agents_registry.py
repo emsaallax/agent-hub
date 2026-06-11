@@ -4,7 +4,9 @@
 подключать MCP-серверы — без перезапуска и без правки кода.
 """
 
+import asyncio
 import logging
+import re
 import shlex
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -58,26 +60,67 @@ async def effective(name: str) -> dict:
     }
 
 
-def _mcp_toolsets(servers: list[dict]) -> list:
-    """Собрать pydantic-ai тулсеты из описаний MCP-серверов. Битые — пропускаем."""
+MCP_CONNECT_TIMEOUT = 15  # сек на проверку одного сервера
+
+
+def _tool_prefix(name: str) -> str:
+    """Префикс инструментов: без него одинаковые имена тулзов у разных серверов конфликтуют."""
+    return re.sub(r"\W+", "_", name).strip("_").lower() or "mcp"
+
+
+def _make_toolset(srv: dict):
+    prefix = _tool_prefix(srv["name"])
+    if srv["transport"] == "stdio":
+        from pydantic_ai.mcp import MCPServerStdio
+
+        parts = shlex.split(srv["url"])
+        return MCPServerStdio(parts[0], args=parts[1:], tool_prefix=prefix, timeout=MCP_CONNECT_TIMEOUT)
+    if srv["transport"] == "sse":
+        from pydantic_ai.mcp import MCPServerSSE
+
+        return MCPServerSSE(srv["url"], headers=srv["headers"] or None, tool_prefix=prefix, timeout=MCP_CONNECT_TIMEOUT)
+    from pydantic_ai.mcp import MCPServerStreamableHTTP
+
+    return MCPServerStreamableHTTP(srv["url"], headers=srv["headers"] or None, tool_prefix=prefix, timeout=MCP_CONNECT_TIMEOUT)
+
+
+async def probe_mcp_server(srv: dict) -> tuple[bool, str]:
+    """Реально подключиться к серверу и получить список инструментов.
+
+    Возвращает (ok, сообщение). Используется и при сборке агента, и кнопкой
+    «проверить» в админке.
+    """
+    async def _connect_and_list():
+        toolset = _make_toolset(srv)
+        async with toolset:
+            return await toolset.list_tools()
+
+    try:
+        tools = await asyncio.wait_for(_connect_and_list(), MCP_CONNECT_TIMEOUT)
+        names = ", ".join(t.name for t in tools[:15])
+        return True, f"OK, инструментов: {len(tools)} ({names})"
+    except (TimeoutError, asyncio.TimeoutError):
+        return False, f"не ответил за {MCP_CONNECT_TIMEOUT} сек"
+    except Exception as e:
+        while getattr(e, "exceptions", None):  # разворачиваем ExceptionGroup до настоящей причины
+            e = e.exceptions[0]
+        return False, f"{type(e).__name__}: {e}"
+
+
+async def _mcp_toolsets(servers: list[dict]) -> list:
+    """Собрать тулсеты, предварительно проверив каждый сервер живым подключением.
+
+    Битые серверы пропускаются с записью в лог — один сломанный MCP больше
+    не валит весь оркестратор.
+    """
+    results = await asyncio.gather(*(probe_mcp_server(s) for s in servers))
     toolsets = []
-    for srv in servers:
-        try:
-            if srv["transport"] == "stdio":
-                from pydantic_ai.mcp import MCPServerStdio
-
-                parts = shlex.split(srv["url"])
-                toolsets.append(MCPServerStdio(parts[0], args=parts[1:]))
-            elif srv["transport"] == "sse":
-                from pydantic_ai.mcp import MCPServerSSE
-
-                toolsets.append(MCPServerSSE(srv["url"], headers=srv["headers"] or None))
-            else:  # http (streamable)
-                from pydantic_ai.mcp import MCPServerStreamableHTTP
-
-                toolsets.append(MCPServerStreamableHTTP(srv["url"], headers=srv["headers"] or None))
-        except Exception:
-            log.exception("MCP-сервер %s не подключился — пропускаю", srv.get("name"))
+    for srv, (ok, msg) in zip(servers, results):
+        if ok:
+            toolsets.append(_make_toolset(srv))
+            log.info("MCP %s: %s", srv["name"], msg)
+        else:
+            log.warning("MCP %s пропущен: %s", srv["name"], msg)
     return toolsets
 
 
@@ -101,12 +144,13 @@ async def build(name: str) -> tuple[Agent, bool]:
     )
     agent = _cache.get(key)
     if agent is None:
+        # проверка серверов идёт только при пересборке агента (смена конфига), не на каждое сообщение
         agent = Agent(
             get_model(eff["model"]),
             output_type=spec.output_type,
             system_prompt=eff["prompt"],
             tools=tools,
-            toolsets=_mcp_toolsets(mcp_servers) or None,
+            toolsets=await _mcp_toolsets(mcp_servers) or None,
             retries=spec.retries,
         )
         if len(_cache) > 64:  # конфиги меняются редко, не даём кэшу расти бесконечно

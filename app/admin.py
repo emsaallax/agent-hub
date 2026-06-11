@@ -467,6 +467,17 @@ async def mcp_toggle(server_id: int, body: McpToggle):
     return {"ok": True}
 
 
+@router.post("/mcp/{server_id}/test")
+async def mcp_test(server_id: int):
+    """Живая проверка: подключиться к серверу и получить список инструментов."""
+    servers = await settings_store.mcp_servers(only_enabled=False)
+    srv = next((s for s in servers if s["id"] == server_id), None)
+    if srv is None:
+        raise HTTPException(404, "Нет такого сервера")
+    ok, msg = await agents_registry.probe_mcp_server(srv)
+    return {"ok": ok, "message": msg}
+
+
 @router.delete("/mcp/{server_id}")
 async def mcp_delete(server_id: int):
     await db.execute("DELETE FROM mcp_servers WHERE id = $1", server_id)

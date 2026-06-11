@@ -635,8 +635,12 @@ async function rMcp(){
       <td><span class="badge muted">${esc(s.transport)}</span></td>
       <td class="mono muted" style="max-width:340px;word-break:break-all;font-size:12px">${esc(s.url)}</td>
       <td><label class="switch"><input type="checkbox" ${s.enabled?'checked':''} onchange="toggleMcp(${s.id},this.checked)"><span></span></label></td>
-      <td><button class="btn danger sm" onclick="delMcp(${s.id})">✕</button></td>
-    </tr>`).join("")}</table>`
+      <td style="white-space:nowrap">
+        <button class="btn sm" onclick="testMcp(${s.id},this)">Проверить</button>
+        <button class="btn danger sm" onclick="delMcp(${s.id})">✕</button>
+      </td>
+    </tr>
+    <tr id="mcp-test-${s.id}" style="display:none"><td colspan="5" class="muted mono" style="font-size:12px"></td></tr>`).join("")}</table>`
     : '<div class="empty">MCP-серверов нет. Добавь ниже.</div>'}
   </div>
   <div class="panel">
@@ -683,8 +687,23 @@ window.addMcp = async () => {
   let headers = {};
   if(raw){try{headers=JSON.parse(raw);}catch{toast("Заголовки — невалидный JSON",true);return;}}
   await api("/mcp", {method:"POST", body:{name, transport, url, headers}});
-  toast("MCP-сервер добавлен — агенты используют его уже в следующем запросе.");
+  toast("MCP-сервер добавлен. Нажми «Проверить» — убедись, что он реально подключается.");
   render();
+};
+
+window.testMcp = async (id, btn) => {
+  const row = $("#mcp-test-"+id), cell = row.querySelector("td");
+  btn.disabled = true; btn.textContent = "…";
+  row.style.display = ""; cell.textContent = "Подключаюсь…";
+  try{
+    const r = await api("/mcp/"+id+"/test", {method:"POST"});
+    cell.textContent = (r.ok ? "✅ " : "❌ ") + r.message;
+    cell.style.color = r.ok ? "var(--ok, #2da44e)" : "var(--danger, #d33)";
+  }catch(e){
+    cell.textContent = "❌ " + e;
+  }finally{
+    btn.disabled = false; btn.textContent = "Проверить";
+  }
 };
 
 window.toggleMcp = async (id, enabled) => {
