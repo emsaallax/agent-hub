@@ -168,7 +168,37 @@ async def set_models(body: ModelsUpdate):
         value = getattr(body, tier)
         if value is not None:
             await settings_store.set(f"model_{tier}", value.strip())
+    agents_registry._cache.clear()
     return {"ok": True}
+
+
+class ModelTestIn(BaseModel):
+    model: str
+
+
+@router.post("/models/test")
+async def test_model(body: ModelTestIn):
+    from pydantic_ai import Agent
+    from pydantic_ai.usage import UsageLimits
+    from .llm import get_model
+    slug = body.model.strip()
+    if not slug:
+        raise HTTPException(400, "Пустой slug")
+    try:
+        agent = Agent(get_model(slug), output_type=str)
+        result = await agent.run("Reply with exactly: OK", usage_limits=UsageLimits(request_limit=1))
+        return {"ok": True, "response": result.output.strip()[:120]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
+@router.get("/health-status")
+async def health_status():
+    from . import orchestrator as orch
+    return {
+        "orchestrator": orch.get_health(),
+        "models": await get_models(),
+    }
 
 
 # ===== Задачи =====

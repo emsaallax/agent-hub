@@ -84,18 +84,21 @@ button.btn.sm{padding:4px 10px;font-size:12.5px;border-radius:6px}
   <span class="muted" id="head-info"></span>
 </header>
 <nav id="nav"></nav>
+<div id="status-bar" style="padding:6px 20px;font-size:12.5px;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;gap:10px;flex-wrap:wrap"></div>
 <main id="view"><div class="empty"><span class="spin"></span> Загрузка…</div></main>
 <div id="toast"></div>
 
 <datalist id="model-list">
+  <option value="google/gemini-3.1-pro-preview">
   <option value="google/gemini-2.5-flash">
   <option value="google/gemini-2.5-flash-lite">
   <option value="google/gemini-2.5-pro">
-  <option value="anthropic/claude-sonnet-4.5">
-  <option value="anthropic/claude-haiku-4.5">
+  <option value="anthropic/claude-sonnet-4-5">
+  <option value="anthropic/claude-haiku-4-5">
+  <option value="anthropic/claude-opus-4-5">
   <option value="openai/gpt-4o-mini">
   <option value="openai/gpt-4.1">
-  <option value="deepseek/deepseek-chat-v3.1">
+  <option value="deepseek/deepseek-chat-v3-0324">
   <option value="qwen/qwen3-coder">
 </datalist>
 
@@ -200,7 +203,9 @@ async function rAgents(){
       <div class="field">
         <label>${tierName[t]} — дефолт: <span class="mono">${esc(models[t].default)}</span></label>
         <div class="row">
-          <input type="text" id="tier-${t}" list="model-list" value="${esc(models[t].override)}" placeholder="${esc(models[t].default)}" style="max-width:420px">
+          <input type="text" id="tier-${t}" list="model-list" value="${esc(models[t].override)}" placeholder="${esc(models[t].default)}" style="max-width:360px">
+          <button class="btn ghost sm" onclick="testModel(($('#tier-${t}').value||'${esc(models[t].default)}'), 'test-tier-${t}')">Тест</button>
+          <span id="test-tier-${t}"></span>
         </div>
       </div>`).join("")}
     <button class="btn" onclick="saveModels()">Сохранить модели</button>
@@ -245,12 +250,6 @@ async function rAgents(){
     </div>
   </div>`).join("")}`;
 }
-window.saveModels = async () => {
-  const body = {};
-  for(const t of ["cheap","strong","orchestrator"]) body[t] = $("#tier-"+t).value.trim();
-  await api("/models", {method:"PUT", body});
-  toast("Модели сохранены — применяются сразу.");
-};
 window.toggleAgent = async (name, enabled) => {
   try{ await api("/agents/"+name, {method:"PUT", body:{enabled}}); toast(`${name}: ${enabled?"включён":"выключен"}`); }
   catch(e){ toast(e.message, true); }
@@ -698,7 +697,62 @@ window.delMcp = async id => {
   toast("Удалён."); render();
 };
 
-nav(); render();
+/* ===== Статус-баннер ===== */
+async function updateStatusBar(){
+  const bar = $("#status-bar");
+  try{
+    const h = await api("/health-status");
+    const orch = h.orchestrator;
+    const model = orch.model || h.models?.orchestrator?.effective || "—";
+    function ago(iso){
+      if(!iso) return null;
+      const s = Math.round((Date.now() - new Date(iso).getTime())/1000);
+      if(s < 60) return s+"с назад";
+      if(s < 3600) return Math.floor(s/60)+"мин назад";
+      return Math.floor(s/3600)+"ч назад";
+    }
+    if(orch.last_error_at && (!orch.last_ok_at || orch.last_error_at > orch.last_ok_at)){
+      bar.innerHTML = `<span style="color:var(--err)">● Оркестратор: ошибка ${ago(orch.last_error_at)||""}</span>`
+        +`<span class="muted mono" style="font-size:11.5px">${esc(model)}</span>`
+        +`<span style="color:var(--err);font-size:12px;max-width:600px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(orch.last_error_msg||"")}</span>`;
+    } else if(orch.last_ok_at){
+      bar.innerHTML = `<span style="color:var(--ok)">● Оркестратор: ок ${ago(orch.last_ok_at)}</span>`
+        +`<span class="muted mono" style="font-size:11.5px">${esc(model)}</span>`;
+    } else {
+      bar.innerHTML = `<span class="muted">● Оркестратор: нет данных с момента запуска</span>`
+        +`<span class="muted mono" style="font-size:11.5px">${esc(model)}</span>`;
+    }
+  }catch(e){
+    bar.innerHTML = `<span class="muted">статус недоступен</span>`;
+  }
+}
+
+let _statusTimer = null;
+function scheduleStatus(){ clearTimeout(_statusTimer); _statusTimer = setTimeout(()=>{ updateStatusBar(); scheduleStatus(); }, 30000); }
+
+/* ===== Тест модели ===== */
+window.testModel = async (slug, resultEl) => {
+  const el = document.getElementById(resultEl);
+  el.innerHTML = '<span class="spin"></span>';
+  try{
+    const r = await api("/models/test", {method:"POST", body:{model: slug}});
+    el.innerHTML = r.ok
+      ? `<span class="badge ok">✓ ${esc(r.response)}</span>`
+      : `<span class="badge err">✗ ${esc(r.error)}</span>`;
+  }catch(e){
+    el.innerHTML = `<span class="badge err">✗ ${esc(e.message)}</span>`;
+  }
+};
+
+window.saveModels = async () => {
+  const body = {};
+  for(const t of ["cheap","strong","orchestrator"]) body[t] = $("#tier-"+t).value.trim();
+  await api("/models", {method:"PUT", body});
+  toast("Модели сохранены — применяются сразу.");
+  updateStatusBar();
+};
+
+nav(); render(); updateStatusBar(); scheduleStatus();
 </script>
 </body>
 </html>

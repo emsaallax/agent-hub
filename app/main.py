@@ -1,5 +1,7 @@
 import logging
+import logging.handlers
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
@@ -9,6 +11,17 @@ from .config import settings
 from .subagents import code, inbox, lead, outreach, product, researcher  # noqa: F401 — регистрация агентов в реестре
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
+def _setup_file_logging() -> None:
+    log_dir = Path(settings.data_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    fh = logging.handlers.RotatingFileHandler(
+        log_dir / "agent-hub.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8"
+    )
+    fh.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+    logging.getLogger().addHandler(fh)
+
+_setup_file_logging()
 log = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler(timezone="UTC")

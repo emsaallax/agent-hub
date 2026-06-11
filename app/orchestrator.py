@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import datetime as _dt
 import logging
 from contextvars import ContextVar
 from typing import Literal
@@ -48,9 +49,18 @@ SYSTEM = """Ты — личный ассистент-оркестратор вл
 
 _lock = asyncio.Lock()
 
-# Метка «мы внутри after_task»: авто-запущенные исследования помечаются [auto]
-# и не получают собственного проактивного прохода — защита от цепной реакции.
 _in_after_task: ContextVar[bool] = ContextVar("in_after_task", default=False)
+
+_health: dict = {
+    "last_ok_at": None,
+    "last_error_at": None,
+    "last_error_msg": None,
+    "model": None,
+}
+
+
+def get_health() -> dict:
+    return dict(_health)
 
 PROACTIVE_KINDS = {"product_search", "lead_search", "research", "code", "outreach_prepare"}
 
@@ -293,11 +303,17 @@ async def handle_owner_message(text: str) -> None:
         prompt = f"{context}\n\n---\nНовое сообщение владельца:\n{text}"
         try:
             orchestrator, _ = await build("orchestrator")
+            _health["model"] = await settings_store.tier_model("orchestrator")
             result = await orchestrator.run(prompt, usage_limits=UsageLimits(request_limit=12))
             reply = result.output.strip() or "Принял."
+            _health["last_ok_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+            _health["last_error_at"] = None
+            _health["last_error_msg"] = None
         except Exception as e:
             log.exception("orchestrator failed")
             reply = f"⚠️ Ошибка оркестратора: {e}"
+            _health["last_error_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+            _health["last_error_msg"] = str(e)[:400]
         await memory.add_message("assistant", reply)
         await wa.notify_owner(reply)
     tasks.spawn(memory.maintain())
