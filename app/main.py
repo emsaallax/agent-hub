@@ -17,6 +17,9 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.init_pool()
+    orphaned = await tasks.mark_orphaned()
+    if orphaned:
+        log.warning("Помечено как error %s задач, прерванных перезапуском", orphaned)
     if not settings.owner_phone:
         log.warning("OWNER_PHONE не задан — ассистент будет игнорировать все сообщения!")
     if not settings.openrouter_api_key:

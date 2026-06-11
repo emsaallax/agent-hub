@@ -27,6 +27,9 @@ SYSTEM = """Ты — личный ассистент-оркестратор вл
 Правила:
 - Пиши коротко, по делу, как живой помощник в мессенджере. Без канцелярита.
 - Долгие работы запускай инструментами start_* — они уходят в фон, владельцу придёт уведомление. Не обещай мгновенный результат.
+- О статусе задач НИКОГДА не отвечай по памяти — сначала вызови get_tasks и пересказывай только его ответ. Если задача done — дай результат, не говори, что она ещё идёт.
+- Завершение задачи появляется в истории сообщением «✅ Задача #N завершена». Нет такого сообщения — проверь get_tasks, прежде чем что-то утверждать.
+- Одну и ту же задачу повторно не запускай: инструменты сами скажут, если такая уже выполняется.
 - Если запрос сложный или неоднозначный — сначала переспроси или предложи план одним коротким сообщением, не жги ресурсы на догадки.
 - Рассылку без аппрува не отправляй никогда. Аппрув — через approve_outreach.
 - Для справки о прошлых делах используй search_memory.
@@ -41,7 +44,11 @@ async def start_product_search(
     query: str, mode: Literal["compare", "suppliers", "new"] = "compare"
 ) -> str:
     """Запустить фоновый поиск товаров. mode: compare — сравнить цены, suppliers — найти поставщиков/опт, new — свежие предложения."""
-    task_id = await tasks.create("product_search", f"{mode}: {query}")
+    request = f"{mode}: {query}"
+    dup = await tasks.find_active("product_search", request)
+    if dup:
+        return f"Такая задача уже выполняется (#{dup['id']}). Дубль не запускаю, результат придёт сообщением."
+    task_id = await tasks.create("product_search", request)
     tasks.start(task_id, lambda: product.run(query, mode))
     return f"Задача #{task_id} запущена (поиск товаров: {query}). Результат придёт сообщением."
 
@@ -71,7 +78,11 @@ async def run_price_check_now() -> str:
 
 async def start_lead_search(niche: str, city: str, count: int = 20) -> str:
     """Запустить фоновый поиск потенциальных клиентов: компании с телефонами по нише и городу."""
-    task_id = await tasks.create("lead_search", f"{niche} / {city} / {count}")
+    request = f"{niche} / {city} / {count}"
+    dup = await tasks.find_active("lead_search", request)
+    if dup:
+        return f"Такая задача уже выполняется (#{dup['id']}). Дубль не запускаю, результат придёт сообщением."
+    task_id = await tasks.create("lead_search", request)
     tasks.start(task_id, lambda: lead.run(niche, city, count))
     return f"Задача #{task_id} запущена (клиенты: {niche}, {city}). Результат придёт сообщением."
 
@@ -92,7 +103,11 @@ async def lead_overview() -> str:
 
 async def prepare_outreach(offer: str, niche: str = "", city: str = "", limit: int = 10) -> str:
     """Подготовить черновики первых сообщений новым лидам. offer — что предлагаем клиентам (своими словами). Черновики придут владельцу на аппрув."""
-    task_id = await tasks.create("outreach_prepare", f"{offer} ({niche} {city}, {limit})")
+    request = f"{offer} ({niche} {city}, {limit})"
+    dup = await tasks.find_active("outreach_prepare", request)
+    if dup:
+        return f"Черновики уже готовятся (задача #{dup['id']}). Дубль не запускаю."
+    task_id = await tasks.create("outreach_prepare", request)
     tasks.start(task_id, lambda: outreach.prepare(offer, niche, city, limit))
     return f"Задача #{task_id}: готовлю черновики, пришлю их на аппрув."
 
@@ -121,6 +136,9 @@ async def send_to_lead(lead_id: int, text: str) -> str:
 
 async def start_code_task(description: str) -> str:
     """Запустить кодовую задачу: дешёвая модель пишет код, сильная ревьюит (до 3 итераций). Файлы лягут в data/code/."""
+    dup = await tasks.find_active("code", description)
+    if dup:
+        return f"Такая кодовая задача уже выполняется (#{dup['id']}). Дубль не запускаю."
     task_id = await tasks.create("code", description)
     tasks.start(task_id, lambda: code.run(task_id, description))
     return f"Задача #{task_id} запущена (код). Пришлю результат с вердиктом ревью."
@@ -139,16 +157,29 @@ async def start_ads_task(description: str) -> str:
 # ===== Задачи и память =====
 
 async def get_tasks(limit: int = 5) -> str:
-    """Статусы последних задач."""
+    """Актуальные статусы последних задач (источник правды — БД). Для done/error показывает итог."""
     rows = await db.fetch(
-        "SELECT id, kind, status, request FROM tasks ORDER BY id DESC LIMIT $1", limit
+        """
+        SELECT id, kind, status, request, result,
+               GREATEST(0, EXTRACT(EPOCH FROM (now() - updated_at)) / 60)::int AS mins
+        FROM tasks ORDER BY id DESC LIMIT $1
+        """,
+        limit,
     )
     if not rows:
         return "Задач ещё не было."
     icons = {"pending": "⏳", "running": "⚙️", "done": "✅", "error": "❌"}
-    return "\n".join(
-        f"{icons.get(r['status'], '•')} #{r['id']} {r['kind']}: {r['request'][:80]}" for r in rows
-    )
+    lines = []
+    for r in rows:
+        line = f"{icons.get(r['status'], '•')} #{r['id']} {r['kind']}: {r['request'][:80]}"
+        if r["status"] == "running":
+            line += f" — выполняется уже {r['mins']} мин"
+        elif r["status"] == "done":
+            line += f" — ГОТОВА ({r['mins']} мин назад). Итог: {(r['result'] or '')[:200]}"
+        elif r["status"] == "error":
+            line += f" — упала: {(r['result'] or '')[:120]}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 async def search_memory(query: str) -> str:
