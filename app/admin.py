@@ -536,6 +536,12 @@ async def tools_status():
             "ok": bool(settings.openrouter_api_key),
             "detail": "ключ задан" if settings.openrouter_api_key else "нет ключа OPENROUTER_API_KEY",
         },
+        {
+            "name": "stt",
+            "title": "Голосовые → текст (Whisper)",
+            "ok": bool(settings.openrouter_api_key),
+            "detail": "openai/whisper-large-v3 через OpenRouter" if settings.openrouter_api_key else "нужен OPENROUTER_API_KEY",
+        },
     ]
 
 

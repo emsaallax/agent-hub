@@ -110,6 +110,38 @@ def _extract_text(message_data: dict) -> str:
     return (text or "").strip()
 
 
+def _extract_audio(message_data: dict) -> tuple[str, str]:
+    """Вернуть (download_url, mime_type) для голосового/аудио-сообщения, иначе ('', '')."""
+    audio = message_data.get("audioMessageData") or {}
+    if audio.get("downloadUrl"):
+        return audio["downloadUrl"], audio.get("mimeType", "audio/ogg")
+    # некоторые версии Green API кладут аудио в fileMessageData
+    file_data = message_data.get("fileMessageData") or {}
+    mime = file_data.get("mimeType", "")
+    if "audio" in mime and file_data.get("downloadUrl"):
+        return file_data["downloadUrl"], mime
+    return "", ""
+
+
+async def _resolve_text(message_data: dict, chat: str) -> str:
+    """Вернуть текст сообщения. Если голосовое — транскрибировать через Whisper."""
+    text = _extract_text(message_data)
+    if text:
+        return text
+    audio_url, mime_type = _extract_audio(message_data)
+    if not audio_url:
+        return ""
+    from . import stt
+    try:
+        transcript = await stt.transcribe_url(audio_url, mime_type)
+        if transcript:
+            log.info("STT: chat=%s transcript_len=%s", chat, len(transcript))
+            return f"[голосовое] {transcript}"
+    except Exception:
+        log.exception("STT failed for chat=%s url=%s", chat, audio_url)
+    return ""
+
+
 @app.post("/webhooks/greenapi")
 async def greenapi_webhook(request: Request):
     """Единый вебхук Green API для обоих инстансов.
@@ -125,9 +157,13 @@ async def greenapi_webhook(request: Request):
 
     sender = body.get("senderData") or {}
     chat = sender.get("chatId") or ""
-    text = _extract_text(body.get("messageData") or {})
+    if not chat.endswith("@c.us"):
+        return {"ok": True}
+
+    message_data = body.get("messageData") or {}
+    text = await _resolve_text(message_data, chat)
     log.info("webhook: chat=%s owner_chat_id=%s text_len=%s", chat, settings.owner_chat_id, len(text))
-    if not text or not chat.endswith("@c.us"):  # только личные текстовые сообщения
+    if not text:
         return {"ok": True}
 
     if chat == settings.owner_chat_id:
