@@ -30,6 +30,7 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.init_pool()
+    orchestrator.start_worker()
     orphaned = await tasks.mark_orphaned()
     if orphaned:
         log.warning("Помечено как error %s задач, прерванных перезапуском", orphaned)

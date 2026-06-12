@@ -36,9 +36,18 @@ SYSTEM = """Ты — личный ассистент-оркестратор вл
 - search_memory — архив прошлых задач; remember — запомнить факт навсегда.
 - reflect_now — твоя саморефлексия: разбор своей работы, уроки в память.
 
+Запрещено:
+- "Хорошо, сейчас сделаю", "Понял, занимаюсь", "Конечно!" и любые шаблонные подтверждения.
+- Пересказывать владельцу то, что он только что написал.
+- Извиняться и объяснять что ты не можешь — просто скажи коротко что пока не умеешь.
+- Завершать сообщение вопросом "Есть ли ещё что-нибудь?" или подобными.
+Стиль: деловой мессенджер, не чат-бот. Короче, конкретнее, никакой воды.
+
 Правила работы:
 - Пиши коротко, по делу, как живой помощник в мессенджере. Без канцелярита.
 - Долгие работы запускай инструментами start_* — они уходят в фон, владельцу придёт уведомление. Не обещай мгновенный результат.
+- Если ты уже вызвал start_* инструмент — НЕ пересказывай владельцу его ответ. Ответь одной короткой строкой, что запустил, и жди. Результат придёт отдельным сообщением.
+- Показать ход задачи («покажи мысли/шаги задачи #N») — вызови get_task_trace.
 - О статусе задач НИКОГДА не отвечай по памяти — сначала вызови get_tasks и пересказывай только его ответ. Если задача done — дай результат, не говори, что она ещё идёт.
 - Завершение задачи появляется в истории сообщением «✅ Задача #N завершена». Нет такого сообщения — проверь get_tasks, прежде чем что-то утверждать.
 - Одну и ту же задачу повторно не запускай: инструменты сами скажут, если такая уже выполняется.
@@ -55,7 +64,8 @@ SYSTEM = """Ты — личный ассистент-оркестратор вл
 - Для списков — только дефис или цифра с точкой.
 - Когда результат исследования большой — дай выжимку: 3-5 главных пунктов. Полный отчёт уже сохранён в vault, не нужно дублировать его в чат."""
 
-_lock = asyncio.Lock()
+_queue: asyncio.Queue[str] = asyncio.Queue()
+_worker_task: asyncio.Task | None = None
 
 _in_after_task: ContextVar[bool] = ContextVar("in_after_task", default=False)
 
@@ -267,6 +277,17 @@ async def get_tasks(limit: int = 5) -> str:
     return "\n".join(lines)
 
 
+async def get_task_trace(task_id: int) -> str:
+    """Показать пошаговый трейс задачи («покажи мысли/шаги задачи #N»): что и в каком порядке делал агент."""
+    row = await db.fetchrow("SELECT kind, status, trace FROM tasks WHERE id = $1", task_id)
+    if not row:
+        return f"Задачи #{task_id} нет."
+    trace = (row["trace"] or "").strip()
+    if not trace:
+        return f"Задача #{task_id} ({row['kind']}, {row['status']}): трейс пуст."
+    return f"Шаги задачи #{task_id} ({row['kind']}, {row['status']}):\n{trace}"
+
+
 async def search_memory(query: str) -> str:
     """Поиск по архиву прошлых задач и договорённостей."""
     results = await memory.search_archive(query)
@@ -295,7 +316,7 @@ register(
             prepare_outreach, list_pending_outreach, approve_outreach,
             reject_outreach, send_to_lead,
             start_code_task, start_ads_task,
-            get_tasks, search_memory, remember,
+            get_tasks, get_task_trace, search_memory, remember,
             vault_search, vault_write, vault_read, reflect_now,
         ],
     )
@@ -305,26 +326,56 @@ register(
 # ===== Главный цикл =====
 
 async def handle_owner_message(text: str) -> None:
-    async with _lock:  # сообщения владельца обрабатываем по одному
-        context = await memory.build_context_block()  # контекст до записи нового сообщения, чтобы не дублировать его
-        await memory.add_message("user", text)
-        prompt = f"{context}\n\n---\nНовое сообщение владельца:\n{text}"
-        try:
-            _health["model"] = await settings_store.tier_model("orchestrator")
-            result, _ = await run_safe("orchestrator", prompt, usage_limits=UsageLimits(request_limit=12))
-            reply = (result.output.strip() if result else "") or "Принял."
-            _health["last_ok_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
-            _health["last_error_at"] = None
-            _health["last_error_msg"] = None
-        except Exception as e:
-            log.exception("orchestrator failed")
-            reply = f"⚠️ Ошибка оркестратора: {e}"
-            _health["last_error_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
-            _health["last_error_msg"] = str(e)[:400]
-            await errlog.record("orchestrator", f"сообщение: {text[:80]}", e)
-        await memory.add_message("assistant", reply)
-        await wa.notify_owner(reply)
+    """Кладёт сообщение владельца в очередь. Обработкой занимается _worker —
+    сообщения не блокируют друг друга на приёме, но обрабатываются по одному, по порядку."""
+    await _queue.put(text)
+
+
+async def _process_owner_message(text: str) -> None:
+    context = await memory.build_context_block()  # контекст до записи нового сообщения, чтобы не дублировать его
+    await memory.add_message("user", text)
+    prompt = f"{context}\n\n---\nНовое сообщение владельца:\n{text}"
+    try:
+        _health["model"] = await settings_store.tier_model("orchestrator")
+        result, _ = await run_safe("orchestrator", prompt, usage_limits=UsageLimits(request_limit=12))
+        reply = (result.output.strip() if result else "") or "Принял."
+        _health["last_ok_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        _health["last_error_at"] = None
+        _health["last_error_msg"] = None
+    except Exception as e:
+        log.exception("orchestrator failed")
+        reply = f"⚠️ Ошибка оркестратора: {e}"
+        _health["last_error_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        _health["last_error_msg"] = str(e)[:400]
+        await errlog.record("orchestrator", f"сообщение: {text[:80]}", e)
+    await memory.add_message("assistant", reply)
+    await wa.notify_owner(reply)
     tasks.spawn(memory.maintain())
+
+
+async def _worker() -> None:
+    """Однопоточный воркер: берёт сообщения владельца из очереди и обрабатывает по одному.
+    Не теряет сообщения и не блокирует приём — приём только кладёт в очередь."""
+    log.info("orchestrator worker started")
+    while True:
+        text = await _queue.get()
+        try:
+            # Если накопился бэклог — предупредим владельца, что разбираем по очереди.
+            backlog = _queue.qsize()
+            if backlog > 3:
+                await wa.notify_owner(f"Принял {backlog + 1} сообщений, обрабатываю по очереди.")
+            await _process_owner_message(text)
+        except Exception:
+            log.exception("orchestrator worker iteration failed")
+        finally:
+            _queue.task_done()
+
+
+def start_worker() -> None:
+    """Запустить фонового воркера оркестратора. Зовётся из lifespan приложения."""
+    global _worker_task
+    if _worker_task is None or _worker_task.done():
+        _worker_task = asyncio.create_task(_worker())
 
 
 # ===== Проактивность после завершения задачи =====
