@@ -14,10 +14,10 @@ from .agents_registry import AgentSpec, build, register, run_safe
 
 log = logging.getLogger(__name__)
 
-WINDOW = 15           # сколько последних сообщений держим в промпте
-SUMMARIZE_AFTER = 40  # при скольких несжатых сообщениях запускать суммаризацию
+WINDOW = 8            # сколько последних сообщений держим в промпте
+SUMMARIZE_AFTER = 30  # при скольких несжатых сообщениях запускать суммаризацию
 MAX_FACTS = 100
-MSG_CAP = 1500        # обрезка одного сообщения в контексте
+MSG_CAP = 800         # обрезка одного сообщения в контексте
 CURATE_COOLDOWN_H = 6 # не гонять актуализацию при полной памяти чаще, чем раз в N часов
 
 register(

@@ -337,7 +337,7 @@ async def _process_owner_message(text: str) -> None:
     prompt = f"{context}\n\n---\nНовое сообщение владельца:\n{text}"
     try:
         _health["model"] = await settings_store.tier_model("orchestrator")
-        result, _ = await run_safe("orchestrator", prompt, usage_limits=UsageLimits(request_limit=12))
+        result, _ = await run_safe("orchestrator", prompt, usage_limits=UsageLimits(request_limit=6))
         reply = (result.output.strip() if result else "") or "Принял."
         _health["last_ok_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
         _health["last_error_at"] = None
