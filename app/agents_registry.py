@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.usage import UsageLimits
 
 from . import settings_store
 from .llm import get_model
@@ -157,3 +159,53 @@ async def build(name: str) -> tuple[Agent, bool]:
             _cache.clear()
         _cache[key] = agent
     return agent, eff["enabled"]
+
+
+async def run_safe(
+    name: str,
+    prompt: str,
+    usage_limits: UsageLimits | None = None,
+):
+    """Запустить агент; при HTTP 400 — пересобрать со strong-моделью и повторить.
+
+    Некоторые дешёвые модели (напр. deepseek-v4-flash) не поддерживают
+    response_format/JSON-schema и возвращают 400 для агентов со структурированным
+    output_type. Fallback на strong-tier решает это прозрачно.
+    """
+    agent, enabled = await build(name)
+    if not enabled:
+        return None, False
+
+    kwargs: dict[str, Any] = {}
+    if usage_limits is not None:
+        kwargs["usage_limits"] = usage_limits
+
+    try:
+        return await agent.run(prompt, **kwargs), True
+    except ModelHTTPError as e:
+        if e.status_code != 400:
+            raise
+        spec = REGISTRY[name]
+        log.warning(
+            "agent %s: 400 от модели %s (не поддерживает формат запроса), "
+            "переключаюсь на strong-tier",
+            name, e.model_name,
+        )
+        from . import errlog  # импорт здесь — чтобы не плодить зависимости на старте
+
+        await errlog.record(
+            "agent", f"{name}: fallback на strong",
+            f"HTTP 400 от {e.model_name} — модель не приняла формат запроса, повторил на strong-tier",
+        )
+        fallback_model = await settings_store.tier_model("strong")
+        eff = await effective(name)
+        disabled = set(eff["disabled_tools"])
+        tools = [t for t in spec.tools if t.__name__ not in disabled]
+        fallback_agent = Agent(
+            get_model(fallback_model),
+            output_type=spec.output_type,
+            system_prompt=eff["prompt"],
+            tools=tools,
+            retries=spec.retries,
+        )
+        return await fallback_agent.run(prompt, **kwargs), True

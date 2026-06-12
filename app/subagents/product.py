@@ -1,9 +1,11 @@
 """ProductAgent: поиск товаров/поставщиков/новинок."""
 
 from pydantic import BaseModel
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.usage import UsageLimits
 
-from ..agents_registry import AgentSpec, build, register
+from .. import errlog
+from ..agents_registry import AgentSpec, build, register, run_safe
 from ..tools import scraper, sheets, web_search, wildberries
 
 
@@ -70,11 +72,15 @@ register(
 
 
 async def run(query: str, mode: str = "compare") -> str:
-    agent, enabled = await build("product")
+    prompt = MODE_PROMPTS.get(mode, MODE_PROMPTS["compare"]).format(query=query)
+    try:
+        result_tuple = await run_safe("product", prompt, usage_limits=UsageLimits(request_limit=25))
+    except UsageLimitExceeded as e:
+        await errlog.record("agent", f"product: {query[:60]}", e)
+        return "⚠️ Поиск товаров прерван: слишком широкий запрос. Уточни категорию или уменьши охват."
+    result, enabled = result_tuple
     if not enabled:
         return "Агент поиска товаров выключен в админке."
-    prompt = MODE_PROMPTS.get(mode, MODE_PROMPTS["compare"]).format(query=query)
-    result = await agent.run(prompt, usage_limits=UsageLimits(request_limit=15))
     report = result.output
 
     summary = report.summary

@@ -1,10 +1,11 @@
 """LeadAgent: анализ рынка — компании с контактами по нише и городу."""
 
 from pydantic import BaseModel
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.usage import UsageLimits
 
-from .. import db
-from ..agents_registry import AgentSpec, build, register
+from .. import db, errlog
+from ..agents_registry import AgentSpec, build, register, run_safe
 from ..config import normalize_phone
 from ..tools import scraper, sheets, twogis, web_search
 
@@ -93,14 +94,18 @@ async def _upsert_company(c: CompanyOut, niche: str, city: str) -> bool:
 
 
 async def run(niche: str, city: str, count: int = 20) -> str:
-    agent, enabled = await build("lead")
-    if not enabled:
-        return "Агент поиска клиентов выключен в админке."
     prompt = (
         f"Найди до {count} компаний: ниша «{niche}», город «{city}». "
         f"Обязательно телефоны. Начни с 2GIS, добери вебом, если мало."
     )
-    result = await agent.run(prompt, usage_limits=UsageLimits(request_limit=15))
+    try:
+        result_tuple = await run_safe("lead", prompt, usage_limits=UsageLimits(request_limit=25))
+    except UsageLimitExceeded as e:
+        await errlog.record("agent", f"lead: {niche} / {city}", e)
+        return "⚠️ Поиск клиентов прерван: слишком широкая ниша или большой count. Уточни нишу или уменьши количество."
+    result, enabled = result_tuple
+    if not enabled:
+        return "Агент поиска клиентов выключен в админке."
     report = result.output
 
     new_count = 0
