@@ -10,7 +10,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from . import db, vault
+from . import db, errlog, memory, vault
 from .agents_registry import REGISTRY, AgentSpec, build, register
 
 log = logging.getLogger(__name__)
@@ -58,6 +58,13 @@ async def _gather_material() -> str:
     lessons = await db.fetch(
         "SELECT fact FROM memory_facts WHERE active AND category = 'lesson' ORDER BY id DESC LIMIT 20"
     )
+    errors = await db.fetch(
+        """
+        SELECT source, ref, error_class, message, created_at
+        FROM error_log WHERE created_at >= now() - interval '7 days'
+        ORDER BY id DESC LIMIT 15
+        """
+    )
     capabilities = "\n".join(
         f"- {s.title} ({s.name}): {s.description}" for s in REGISTRY.values()
     )
@@ -66,9 +73,14 @@ async def _gather_material() -> str:
         for r in tasks_rows
     ) or "Задач за неделю не было."
     lessons_block = "\n".join(f"- {r['fact']}" for r in lessons) or "(пока нет)"
+    errors_block = "\n".join(
+        f"[{r['created_at']:%d.%m %H:%M}] {r['source']} {r['ref']} ({r['error_class']}): {r['message'][:150]}"
+        for r in errors
+    ) or "(ошибок не записано)"
     return (
         f"Возможности системы:\n{capabilities}\n\n"
         f"Задачи за 7 дней:\n{tasks_block}\n\n"
+        f"Журнал ошибок за 7 дней (классифицированный):\n{errors_block}\n\n"
         f"Уже выученные уроки:\n{lessons_block}"
     )
 
@@ -108,9 +120,15 @@ async def run_reflection() -> str:
 
 
 async def daily_job() -> None:
-    """Для планировщика: тихая ежесуточная рефлексия (без сообщений владельцу)."""
+    """Для планировщика: тихая ежесуточная рефлексия + актуализация фактов."""
+    try:
+        await memory.curate_facts()
+    except Exception as e:
+        log.exception("daily fact curation failed")
+        await errlog.record("memory", "fact_curator", e)
     try:
         await run_reflection()
         log.info("daily reflection done")
-    except Exception:
+    except Exception as e:
         log.exception("daily reflection failed")
+        await errlog.record("task", "reflection (ежесуточная)", e)

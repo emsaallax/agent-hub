@@ -109,7 +109,7 @@ const view = $("#view");
 let activeTab = "overview", refreshTimer = null;
 
 const TABS = [
-  ["overview","Обзор"], ["agents","Агенты"], ["tasks","Задачи"], ["memory","Память"],
+  ["overview","Обзор"], ["agents","Агенты"], ["tasks","Задачи"], ["errors","Ошибки"], ["memory","Память"],
   ["vault","Заметки"], ["leads","Лиды"], ["outreach","Рассылка"], ["watch","Мониторинг"],
   ["tools","Инструменты"], ["mcp","MCP"], ["settings","Настройки"],
 ];
@@ -141,6 +141,7 @@ async function render(){
     if(activeTab==="overview") await rOverview();
     else if(activeTab==="agents") await rAgents();
     else if(activeTab==="tasks") await rTasks();
+    else if(activeTab==="errors") await rErrors();
     else if(activeTab==="memory") await rMemory();
     else if(activeTab==="vault") await rVault();
     else if(activeTab==="leads") await rLeads();
@@ -166,12 +167,13 @@ async function rOverview(){
   <div class="cards">
     <div class="card"><div class="num">${t.running||0}</div><div class="lbl">задач выполняется</div></div>
     <div class="card"><div class="num">${t.done||0}</div><div class="lbl">задач сделано</div></div>
-    <div class="card"><div class="num">${t.error||0}</div><div class="lbl">задач с ошибкой</div></div>
+    <div class="card" style="cursor:pointer" onclick="go('errors')"><div class="num">${t.error||0}</div><div class="lbl">задач с ошибкой</div></div>
+    <div class="card" style="cursor:pointer" onclick="go('errors')"><div class="num">${o.errors_today||0}</div><div class="lbl">ошибок за сутки</div></div>
     <div class="card"><div class="num">${sum(l)}</div><div class="lbl">лидов в базе</div></div>
     <div class="card"><div class="num">${o.outreach_pending}</div><div class="lbl">черновиков на аппруве</div></div>
     <div class="card"><div class="num">${o.outreach_sent_today}</div><div class="lbl">отправлено сегодня</div></div>
     <div class="card"><div class="num">${o.watched}</div><div class="lbl">товаров в мониторинге</div></div>
-    <div class="card"><div class="num">${o.facts}</div><div class="lbl">фактов в памяти</div></div>
+    <div class="card" style="cursor:pointer" onclick="go('memory')"><div class="num">${o.facts}</div><div class="lbl">фактов в памяти</div></div>
     <div class="card" style="cursor:pointer" onclick="go('vault')"><div class="num">${o.vault_notes}</div><div class="lbl">заметок в vault</div></div>
     <div class="card" style="cursor:pointer" onclick="go('mcp')"><div class="num">${o.mcp_servers}</div><div class="lbl">MCP-серверов</div></div>
   </div>
@@ -287,12 +289,58 @@ async function rTasks(){
   autorefresh(5000);
 }
 
+/* ===== Журнал ошибок ===== */
+const ERR_CLS = {
+  timeout:        ["warn","таймаут"],
+  request_limit:  ["warn","лимит шагов"],
+  provider_json:  ["err","битый ответ модели"],
+  mcp:            ["err","MCP"],
+  http:           ["err","сеть/провайдер"],
+  other:          ["muted","другое"],
+};
+async function rErrors(){
+  const rows = await api("/errors?limit=100");
+  const badge = c => { const [cls,name] = ERR_CLS[c]||["muted",c]; return `<span class="badge ${cls}">${esc(name)}</span>`; };
+  view.innerHTML = `<div class="panel">
+    <div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <h3 style="margin:0">Журнал ошибок (${rows.length})</h3>
+      ${rows.length?'<button class="btn danger sm" onclick="clearErrors()">Очистить журнал</button>':''}
+    </div>
+    <div class="muted" style="font-size:12px;margin-bottom:10px">
+      Сюда падают ошибки задач, агентов, памяти и оркестратора — с классификацией причины.
+      Клик по строке — детали (traceback). Старше 30 дней чистится само. Журнал читает и рефлексия.
+    </div>
+    ${rows.length?`<table><tr><th>Когда</th><th>Откуда</th><th>Причина</th><th>Что случилось</th></tr>
+      ${rows.map(r=>`
+      <tr class="clickable" onclick="const x=document.getElementById('err-${r.id}'); x.style.display = x.style.display==='none'?'':'none'">
+        <td class="muted" style="white-space:nowrap">${dt(r.created_at)}</td>
+        <td class="mono" style="font-size:12px">${esc(r.source)}${r.ref?` · ${esc(r.ref.slice(0,60))}`:''}</td>
+        <td>${badge(r.error_class)}</td>
+        <td>${esc((r.message||"").slice(0,150))}</td>
+      </tr>
+      <tr id="err-${r.id}" style="display:none"><td colspan="4"><div class="expand mono">${esc(r.details||r.message)}</div></td></tr>`).join("")}
+    </table>`:'<div class="empty">Ошибок не записано 🎉</div>'}</div>`;
+  autorefresh(10000);
+}
+window.clearErrors = async () => {
+  if(!confirm("Очистить весь журнал ошибок?")) return;
+  await api("/errors", {method:"DELETE"}); toast("Журнал очищен."); render();
+};
+
 /* ===== Память ===== */
 async function rMemory(){
   const m = await api("/memory");
   view.innerHTML = `
   <div class="panel">
-    <h3>Факты (${m.facts.length})</h3>
+    <div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <h3 style="margin:0">Факты (${m.facts_active??m.facts.length} из ${m.max_facts||100})</h3>
+      <button class="btn ghost sm" id="curate-btn" onclick="curateFacts()">🧹 Актуализировать</button>
+    </div>
+    <div class="muted" style="font-size:12px;margin-bottom:10px">
+      экстрактор фактов: ${m.extractor_enabled?'<span class="badge ok">включён</span>':'<span class="badge err">выключен — новые факты из диалога НЕ извлекаются</span>'}
+      • последняя актуализация: ${m.last_curated?dt(m.last_curated):'ещё не было'}
+      ${(m.memory_errors||[]).length?`<br><span class="badge err">ошибки памяти</span> ${m.memory_errors.map(e=>`[${dt(e.created_at)}] ${esc((e.message||"").slice(0,90))}`).join(" · ")} — подробности на вкладке «Ошибки»`:''}
+    </div>
     <div class="row" style="margin-bottom:10px">
       <input type="text" id="new-fact" placeholder="Новый факт: «работаем только по Москве»…" style="flex:1;min-width:240px">
       <button class="btn" onclick="addFact()">Добавить</button>
@@ -331,6 +379,13 @@ window.addFact = async () => {
   toast("Факт добавлен."); render();
 };
 window.delFact = async (id) => { await api("/memory/facts/"+id, {method:"DELETE"}); render(); };
+window.curateFacts = async () => {
+  const b = $("#curate-btn");
+  b.disabled = true; b.innerHTML = '<span class="spin"></span> Чищу память…';
+  try{ const r = await api("/memory/facts/curate", {method:"POST"}); toast(r.message); }
+  catch(e){ toast(e.message, true); }
+  render();
+};
 window.searchArch = async () => {
   const q = $("#arch-q").value.trim();
   const r = await api("/memory/archive?q="+encodeURIComponent(q));

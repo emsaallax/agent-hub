@@ -10,7 +10,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
-from . import db, memory, settings_store, vault, wa
+from . import db, errlog, memory, settings_store, vault, wa
 
 log = logging.getLogger(__name__)
 
@@ -101,9 +101,15 @@ async def execute(task_id: int, runner: Callable[[], Awaitable[str]]) -> None:
             await orchestrator.after_task(task_id, row["kind"], row["request"], summary)
         except Exception:
             log.exception("after_task failed for %s", task_id)
-            await wa.notify_owner(f"✅ Задача #{task_id} готова.\n\n{summary}")
+            wa_summary = summary[:1200] + ("\n\n📄 Полный отчёт сохранён в vault." if len(summary) > 1200 else "")
+            await wa.notify_owner(f"✅ Задача #{task_id} готова.\n\n{wa_summary}")
     except asyncio.TimeoutError:
         log.error("task %s timed out after %ss", task_id, TASK_TIMEOUT_S)
+        await errlog.record(
+            "task", f"#{task_id} ({row['kind']})",
+            f"Таймаут: задача не уложилась в {TASK_TIMEOUT_S // 60} мин и была прервана",
+            details=row["request"][:500],
+        )
         await db.execute(
             "UPDATE tasks SET status = 'error', result = $2, updated_at = now() WHERE id = $1",
             task_id,
@@ -118,6 +124,7 @@ async def execute(task_id: int, runner: Callable[[], Awaitable[str]]) -> None:
         )
     except Exception as e:
         log.exception("task %s failed", task_id)
+        await errlog.record("task", f"#{task_id} ({row['kind']})", e)
         await db.execute(
             "UPDATE tasks SET status = 'error', result = $2, updated_at = now() WHERE id = $1",
             task_id,

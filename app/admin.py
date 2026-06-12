@@ -72,6 +72,9 @@ async def overview():
         ),
         "watched": await db.fetchval("SELECT count(*) FROM watched_products WHERE active"),
         "facts": await db.fetchval("SELECT count(*) FROM memory_facts WHERE active"),
+        "errors_today": await db.fetchval(
+            "SELECT count(*) FROM error_log WHERE created_at >= now() - interval '24 hours'"
+        ),
         "vault_notes": await db.fetchval("SELECT count(*) FROM vault_notes"),
         "mcp_servers": await db.fetchval("SELECT count(*) FROM mcp_servers WHERE enabled"),
         "dialog_messages": await db.fetchval("SELECT count(*) FROM dialog_messages"),
@@ -213,6 +216,24 @@ async def list_tasks(limit: int = 50, status: str = ""):
     return _rows(rows)
 
 
+# ===== Журнал ошибок =====
+
+@router.get("/errors")
+async def list_errors(limit: int = 100, source: str = ""):
+    q = "SELECT id, source, ref, error_class, message, details, created_at FROM error_log"
+    if source:
+        rows = await db.fetch(q + " WHERE source = $1 ORDER BY id DESC LIMIT $2", source, limit)
+    else:
+        rows = await db.fetch(q + " ORDER BY id DESC LIMIT $1", limit)
+    return _rows(rows)
+
+
+@router.delete("/errors")
+async def clear_errors():
+    await db.execute("DELETE FROM error_log")
+    return {"ok": True}
+
+
 # ===== Память =====
 
 @router.get("/memory")
@@ -224,11 +245,26 @@ async def get_memory():
     dialog = await db.fetch(
         "SELECT id, role, content, created_at FROM dialog_messages ORDER BY id DESC LIMIT 30"
     )
+    extractor_cfg = await settings_store.agent_config("fact_extractor")
+    memory_errors = await db.fetch(
+        "SELECT created_at, ref, message FROM error_log WHERE source = 'memory' ORDER BY id DESC LIMIT 3"
+    )
     return {
         "facts": _rows(facts),
+        "facts_active": await db.fetchval("SELECT count(*) FROM memory_facts WHERE active"),
+        "max_facts": memory.MAX_FACTS,
+        "extractor_enabled": extractor_cfg["enabled"],
+        "last_curated": await settings_store.get("facts_last_curated", ""),
+        "memory_errors": _rows(memory_errors),
         "summary": {k: _clean(v) for k, v in dict(state).items()},
         "dialog": _rows(dialog),
     }
+
+
+@router.post("/memory/facts/curate")
+async def curate_facts_now():
+    """Актуализация фактов: убрать устаревшее и дубли, слить похожие (ждёт результата)."""
+    return {"message": await memory.curate_facts()}
 
 
 class FactIn(BaseModel):

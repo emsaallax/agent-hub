@@ -36,6 +36,19 @@ CREATE TABLE IF NOT EXISTS memory_archive (
 );
 CREATE INDEX IF NOT EXISTS memory_archive_tsv_idx ON memory_archive USING GIN (tsv);
 
+-- ===== Журнал ошибок (задачи, память, оркестратор) =====
+
+CREATE TABLE IF NOT EXISTS error_log (
+    id BIGSERIAL PRIMARY KEY,
+    source TEXT NOT NULL,                        -- task | agent | memory | orchestrator
+    ref TEXT NOT NULL DEFAULT '',                -- например 'task #42 (research)'
+    error_class TEXT NOT NULL DEFAULT 'other',   -- timeout | request_limit | provider_json | mcp | http | other
+    message TEXT NOT NULL,
+    details TEXT NOT NULL DEFAULT '',            -- traceback
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS error_log_created_idx ON error_log (created_at DESC);
+
 -- ===== Настройки и конфиги агентов (редактируются из админки) =====
 
 CREATE TABLE IF NOT EXISTS app_settings (

@@ -5,9 +5,12 @@
 """
 
 import logging
+from datetime import datetime, timedelta, timezone
 
-from . import db
-from .agents_registry import AgentSpec, build, register
+from pydantic import BaseModel
+
+from . import db, errlog, settings_store
+from .agents_registry import AgentSpec, build, register, run_safe
 
 log = logging.getLogger(__name__)
 
@@ -15,6 +18,7 @@ WINDOW = 15           # сколько последних сообщений д�
 SUMMARIZE_AFTER = 40  # при скольких несжатых сообщениях запускать суммаризацию
 MAX_FACTS = 100
 MSG_CAP = 1500        # обрезка одного сообщения в контексте
+CURATE_COOLDOWN_H = 6 # не гонять актуализацию при полной памяти чаще, чем раз в N часов
 
 register(
     AgentSpec(
@@ -43,6 +47,32 @@ register(
         ),
         description="Достаёт долгосрочные факты из диалога в memory_facts.",
         output_type=list[str],
+    )
+)
+
+
+class FactAudit(BaseModel):
+    remove_ids: list[int]  # id устаревших/дублирующихся фактов
+    add: list[str]         # объединённые формулировки взамен слитых
+
+
+register(
+    AgentSpec(
+        name="fact_curator",
+        title="Память: актуализация фактов",
+        tier="cheap",
+        prompt=(
+            "Ты приводишь в порядок список долгосрочных фактов о владельце и его бизнесе. "
+            "Тебе дают пронумерованный список фактов с категориями и датами. Верни:\n"
+            "- remove_ids: id фактов, которые УСТАРЕЛИ (есть более свежий противоречащий факт), "
+            "ДУБЛИРУЮТ другой факт или были разовыми и не пригодятся через месяц;\n"
+            "- add: новые формулировки, если несколько фактов стоит слить в один "
+            "(иначе пустой список). Каждая — одна короткая строка по-русски.\n"
+            "Факты категории manual вводил сам владелец — удаляй их только при явном "
+            "дубле или противоречии. Будь консервативен: сомневаешься — оставляй."
+        ),
+        description="Чистит память: убирает устаревшие и дублирующиеся факты, сливает похожие.",
+        output_type=FactAudit,
     )
 )
 
@@ -105,17 +135,36 @@ async def maintain() -> None:
     """Фоновое обслуживание после обмена сообщениями: факты + суммаризация."""
     try:
         await _extract_facts()
-    except Exception:
+    except Exception as e:
         log.exception("fact extraction failed")
+        await errlog.record("memory", "fact_extractor", e)
     try:
         await _maybe_summarize()
-    except Exception:
+    except Exception as e:
         log.exception("summarization failed")
+        await errlog.record("memory", "memory_summarizer", e)
+
+
+async def _fact_exists(fact: str) -> bool:
+    return bool(
+        await db.fetchval(
+            "SELECT 1 FROM memory_facts WHERE active AND lower(fact) = lower($1)", fact
+        )
+    )
 
 
 async def _extract_facts() -> None:
     n_facts = await db.fetchval("SELECT count(*) FROM memory_facts WHERE active")
     if n_facts >= MAX_FACTS:
+        # Память заполнена: вместо тихой остановки чистим её (не чаще раза в CURATE_COOLDOWN_H)
+        last = await settings_store.get("facts_last_curated", "")
+        try:
+            last_dt = datetime.fromisoformat(last) if last else None
+        except ValueError:
+            last_dt = None
+        if last_dt is None or datetime.now(timezone.utc) - last_dt > timedelta(hours=CURATE_COOLDOWN_H):
+            log.info("memory_facts заполнена (%s) — запускаю актуализацию", n_facts)
+            await curate_facts()
         return
     recent = await db.fetch(
         "SELECT role, content FROM dialog_messages ORDER BY id DESC LIMIT 4"
@@ -126,18 +175,63 @@ async def _extract_facts() -> None:
         f"{'Владелец' if r['role'] == 'user' else 'Ассистент'}: {r['content'][:800]}"
         for r in reversed(recent)
     )
-    extractor, enabled = await build("fact_extractor")
-    if not enabled:
-        return
     known = await get_facts()
     prompt = (
         "Уже известные факты:\n" + "\n".join(f"- {f}" for f in known[:40]) + "\n\nФрагмент диалога:\n" + dialog
     )
-    result = await extractor.run(prompt)
+    result, enabled = await run_safe("fact_extractor", prompt)
+    if not enabled:
+        return
     for fact in result.output[:3]:
         fact = fact.strip()
-        if fact:
+        if fact and not await _fact_exists(fact):
             await db.execute("INSERT INTO memory_facts (fact) VALUES ($1)", fact)
+
+
+async def curate_facts() -> str:
+    """Актуализация памяти: убрать устаревшее и дубли, слить похожие факты.
+
+    Запускается ежесуточно (вместе с рефлексией), кнопкой из админки и
+    автоматически, когда память заполнена. Возвращает краткий итог.
+    """
+    await settings_store.set(
+        "facts_last_curated", datetime.now(timezone.utc).isoformat()
+    )
+    rows = await db.fetch(
+        "SELECT id, fact, category, created_at FROM memory_facts WHERE active ORDER BY id"
+    )
+    if len(rows) < 5:
+        return f"Фактов всего {len(rows)} — актуализация не нужна."
+    listing = "\n".join(
+        f"#{r['id']} [{r['category']}, {r['created_at']:%d.%m.%Y}] {r['fact']}" for r in rows
+    )
+    run_result, enabled = await run_safe("fact_curator", "Список фактов:\n" + listing)
+    if not enabled:
+        return "Куратор фактов выключен в админке."
+    result = run_result.output
+
+    valid_ids = {r["id"] for r in rows}
+    remove = [i for i in result.remove_ids if i in valid_ids]
+    # Защита от слишком агрессивной модели: за один проход не выкидываем больше половины
+    if len(remove) > len(rows) // 2:
+        log.warning("fact_curator предложил удалить %s из %s — режу до половины", len(remove), len(rows))
+        remove = remove[: len(rows) // 2]
+    for fact_id in remove:
+        await db.execute("UPDATE memory_facts SET active = FALSE WHERE id = $1", fact_id)
+
+    added = 0
+    for fact in result.add[:10]:
+        fact = fact.strip()
+        if fact and not await _fact_exists(fact):
+            await db.execute(
+                "INSERT INTO memory_facts (fact, category) VALUES ($1, 'merged')", fact
+            )
+            added += 1
+
+    left = len(rows) - len(remove) + added
+    summary = f"Актуализация памяти: убрано {len(remove)}, объединено в новые {added}, осталось {left}."
+    log.info(summary)
+    return summary
 
 
 async def _maybe_summarize() -> None:

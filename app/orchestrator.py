@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic_ai.usage import UsageLimits
 
-from . import db, memory, monitoring, reflection, settings_store, tasks, vault, wa
+from . import db, errlog, memory, monitoring, reflection, settings_store, tasks, vault, wa
 from .agents_registry import AgentSpec, build, register
 from .subagents import code, lead, outreach, product, researcher
 
@@ -36,7 +36,7 @@ SYSTEM = """Ты — личный ассистент-оркестратор вл
 - search_memory — архив прошлых задач; remember — запомнить факт навсегда.
 - reflect_now — твоя саморефлексия: разбор своей работы, уроки в память.
 
-Правила:
+Правила работы:
 - Пиши коротко, по делу, как живой помощник в мессенджере. Без канцелярита.
 - Долгие работы запускай инструментами start_* — они уходят в фон, владельцу придёт уведомление. Не обещай мгновенный результат.
 - О статусе задач НИКОГДА не отвечай по памяти — сначала вызови get_tasks и пересказывай только его ответ. Если задача done — дай результат, не говори, что она ещё идёт.
@@ -45,7 +45,15 @@ SYSTEM = """Ты — личный ассистент-оркестратор вл
 - Будь проактивным: видишь логичный следующий шаг — предложи его сам, не жди вопроса.
 - Если запрос сложный или неоднозначный — сначала переспроси или предложи план одним коротким сообщением, не жги ресурсы на догадки.
 - Рассылку без аппрува не отправляй никогда. Аппрув — через approve_outreach.
-- Если просят что-то вне твоих инструментов — скажи прямо, что пока не умеешь, и предложи ближайшую альтернативу."""
+- Если просят что-то вне твоих инструментов — скажи прямо, что пока не умеешь, и предложи ближайшую альтернативу.
+
+Формат сообщений (СТРОГО — читают в WhatsApp на телефоне):
+- Одно сообщение = один экран телефона. Максимум 800 символов в ответе.
+- Никаких таблиц (| col | col |) — WhatsApp их не рендерит, получается мусор.
+- Никаких заголовков ## — вместо этого *жирная строка* на отдельной строке.
+- Жирный текст: *одна звёздочка*, НЕ двойная (**текст**).
+- Для списков — только дефис или цифра с точкой.
+- Когда результат исследования большой — дай выжимку: 3-5 главных пунктов. Полный отчёт уже сохранён в vault, не нужно дублировать его в чат."""
 
 _lock = asyncio.Lock()
 
@@ -314,6 +322,7 @@ async def handle_owner_message(text: str) -> None:
             reply = f"⚠️ Ошибка оркестратора: {e}"
             _health["last_error_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
             _health["last_error_msg"] = str(e)[:400]
+            await errlog.record("orchestrator", f"сообщение: {text[:80]}", e)
         await memory.add_message("assistant", reply)
         await wa.notify_owner(reply)
     tasks.spawn(memory.maintain())
@@ -328,7 +337,8 @@ async def after_task(task_id: int, kind: str, request: str, summary: str) -> Non
     его: medium предлагает следующий шаг, high может сам запустить фоновое исследование.
     Рассылка и любые отправки клиентам из этого пути невозможны.
     """
-    await wa.notify_owner(f"✅ Задача #{task_id} готова.\n\n{summary}")
+    wa_summary = summary[:1200] + ("\n\n📄 Полный отчёт сохранён в vault." if len(summary) > 1200 else "")
+    await wa.notify_owner(f"✅ Задача #{task_id} готова.\n\n{wa_summary}")
 
     level = await settings_store.get("autonomy_level", "medium")
     if level == "low" or kind not in PROACTIVE_KINDS or request.startswith("[auto]"):
@@ -361,5 +371,6 @@ async def after_task(task_id: int, kind: str, request: str, summary: str) -> Non
         if comment and comment.upper() != "НЕТ":
             await memory.add_message("assistant", comment)
             await wa.notify_owner(f"💡 {comment}")
-    except Exception:
+    except Exception as e:
         log.exception("after_task proactive pass failed (task %s)", task_id)
+        await errlog.record("orchestrator", f"after_task #{task_id} ({kind})", e)

@@ -5,6 +5,7 @@
 """
 
 import logging
+import re
 
 import httpx
 
@@ -13,6 +14,27 @@ from .config import settings
 log = logging.getLogger(__name__)
 
 MAX_CHUNK = 3500
+
+
+def _strip_markdown(text: str) -> str:
+    """Убрать тяжёлый markdown перед отправкой в WhatsApp.
+
+    WhatsApp поддерживает только *жирный*, _курсив_, ~зачёркнутый~, ```моно```.
+    Всё остальное (таблицы, заголовки ##, двойные звёздочки) — убираем.
+    """
+    # ## Заголовок → *Заголовок*
+    text = re.sub(r"^#{1,4}\s+(.+)$", r"*\1*", text, flags=re.MULTILINE)
+    # **жирный** → *жирный*
+    text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
+    # Строки таблицы (| ... |) → удалить
+    text = re.sub(r"^\|.+\|[ \t]*$", "", text, flags=re.MULTILINE)
+    # Разделители таблицы (|---|---|)
+    text = re.sub(r"^[\|\-\: ]{3,}$", "", text, flags=re.MULTILINE)
+    # --- разделитель → пустая строка
+    text = re.sub(r"^-{3,}$", "", text, flags=re.MULTILINE)
+    # Множественные пустые строки → одна
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def _split(text: str, size: int = MAX_CHUNK) -> list[str]:
@@ -42,6 +64,7 @@ class GreenApi:
         return bool(self.id_instance and self.token)
 
     async def send_text(self, chat_id: str, text: str) -> None:
+        text = _strip_markdown(text)
         if not self.configured:
             raise RuntimeError(
                 "Green API не настроен: задай GREEN_API_ID_INSTANCE и GREEN_API_TOKEN в .env"
