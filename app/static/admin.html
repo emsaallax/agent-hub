@@ -452,8 +452,12 @@ window.approveAll = async () => { const r = await api("/outreach/approve-all", {
 window.runJob = async job => { const r = await api("/jobs/"+job, {method:"POST"}); toast(r.message); };
 
 /* ===== Мониторинг ===== */
+function fmt(n){ if(n==null) return "—"; n=Number(n); if(n>=1e6) return (n/1e6).toFixed(1)+"M"; if(n>=1e3) return (n/1e3).toFixed(1)+"k"; return String(n); }
+
 async function rWatch(){
-  const rows = await api("/watched");
+  const [rows, tokens] = await Promise.all([api("/watched"), api("/tokens")]);
+  const byAgent = tokens.by_agent || [];
+  const byDay   = tokens.by_day   || [];
   view.innerHTML = `<div class="panel">
   <div class="row" style="justify-content:space-between;margin-bottom:10px">
     <h3 style="margin:0">Мониторинг цен (${rows.length})</h3>
@@ -465,7 +469,29 @@ async function rWatch(){
     <td>${r.available==null?"—":r.available?'<span class="badge ok">есть</span>':'<span class="badge err">нет</span>'}</td>
     <td class="muted">${dt(r.last_checked)}</td>
     <td><button class="btn danger sm" onclick="unwatch(${r.id})">убрать</button></td></tr>`).join("")}
-  </table>`:'<div class="empty">Список пуст. Добавь через WhatsApp: «следи за ценой <ссылка>»</div>'}</div>`;
+  </table>`:'<div class="empty">Список пуст. Добавь через WhatsApp: «следи за ценой <ссылка>»</div>'}</div>
+  <div class="panel">
+    <h3>Токены за 7 дней <span class="muted" style="font-weight:400;font-size:13px">всего: ${fmt(tokens.total_7d)}</span></h3>
+    ${byAgent.length?`<table>
+      <tr><th>Агент</th><th>Вызовов</th><th>Входящие</th><th>Исходящие</th><th>Всего</th></tr>
+      ${byAgent.map(r=>`<tr>
+        <td class="mono">${esc(r.agent_name)}</td>
+        <td class="muted">${r.calls}</td>
+        <td class="muted">${fmt(r.input_tokens)}</td>
+        <td class="muted">${fmt(r.output_tokens)}</td>
+        <td><b>${fmt(r.total_tokens)}</b></td>
+      </tr>`).join("")}
+    </table>`:'<div class="empty">Токенов пока нет — данные появятся после первых вызовов агентов</div>'}
+    ${byDay.length?`<div style="margin-top:14px"><table>
+      <tr><th>День</th><th>Вызовов</th><th>Токенов</th></tr>
+      ${byDay.map(r=>`<tr>
+        <td class="muted">${dt(r.day)}</td>
+        <td class="muted">${r.calls}</td>
+        <td>${fmt(r.total_tokens)}</td>
+      </tr>`).join("")}
+    </table></div>`:''}
+  </div>`;
+  autorefresh(30000);
 }
 window.unwatch = async id => { const r = await api("/watched/"+id, {method:"DELETE"}); toast(r.message); render(); };
 

@@ -14,7 +14,7 @@ from typing import Literal
 from pydantic_ai.usage import UsageLimits
 
 from . import db, errlog, memory, monitoring, reflection, settings_store, tasks, vault, wa
-from .agents_registry import AgentSpec, build, register
+from .agents_registry import AgentSpec, build, register, run_safe
 from .subagents import code, lead, outreach, product, researcher
 
 log = logging.getLogger(__name__)
@@ -310,10 +310,9 @@ async def handle_owner_message(text: str) -> None:
         await memory.add_message("user", text)
         prompt = f"{context}\n\n---\nНовое сообщение владельца:\n{text}"
         try:
-            orchestrator, _ = await build("orchestrator")
             _health["model"] = await settings_store.tier_model("orchestrator")
-            result = await orchestrator.run(prompt, usage_limits=UsageLimits(request_limit=12))
-            reply = result.output.strip() or "Принял."
+            result, _ = await run_safe("orchestrator", prompt, usage_limits=UsageLimits(request_limit=12))
+            reply = (result.output.strip() if result else "") or "Принял."
             _health["last_ok_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
             _health["last_error_at"] = None
             _health["last_error_msg"] = None
@@ -361,13 +360,12 @@ async def after_task(task_id: int, kind: str, request: str, summary: str) -> Non
         "Если предложить нечего — ответь ровно: НЕТ."
     )
     try:
-        agent, _ = await build("orchestrator")
         token = _in_after_task.set(True)
         try:
-            result = await agent.run(prompt, usage_limits=UsageLimits(request_limit=4))
+            result, _ = await run_safe("orchestrator", prompt, usage_limits=UsageLimits(request_limit=4))
         finally:
             _in_after_task.reset(token)
-        comment = result.output.strip()
+        comment = result.output.strip() if result else ""
         if comment and comment.upper() != "НЕТ":
             await memory.add_message("assistant", comment)
             await wa.notify_owner(f"💡 {comment}")

@@ -32,11 +32,14 @@ class AgentSpec:
     tools: list[Callable] = field(default_factory=list)
     retries: int = 2
     use_mcp: bool = False          # подключать ли внешние MCP-серверы из админки
+    fallback_tier: str = "strong"  # запасной ярус при ошибках провайдера
 
 
 REGISTRY: dict[str, AgentSpec] = {}
 
 _cache: dict[tuple, Agent] = {}
+
+FALLBACK_STATUSES = {400, 429, 502, 503}
 
 
 def register(spec: AgentSpec) -> AgentSpec:
@@ -161,16 +164,32 @@ async def build(name: str) -> tuple[Agent, bool]:
     return agent, eff["enabled"]
 
 
+async def _log_tokens(name: str, result: Any) -> None:
+    """Записать использование токенов после успешного вызова агента."""
+    try:
+        usage = result.usage()
+        from . import db
+        await db.execute(
+            "INSERT INTO token_log (agent_name, input_tokens, output_tokens, total_tokens)"
+            " VALUES ($1,$2,$3,$4)",
+            name, usage.request_tokens, usage.response_tokens, usage.total_tokens,
+        )
+    except Exception as exc:
+        log.debug("token log failed for %s: %s", name, exc)
+
+
 async def run_safe(
     name: str,
     prompt: str,
     usage_limits: UsageLimits | None = None,
 ):
-    """Запустить агент; при HTTP 400 — пересобрать со strong-моделью и повторить.
+    """Запустить агент; при HTTP 400/429/502/503 — пересобрать на fallback-ярусе и повторить.
 
-    Некоторые дешёвые модели (напр. deepseek-v4-flash) не поддерживают
-    response_format/JSON-schema и возвращают 400 для агентов со структурированным
-    output_type. Fallback на strong-tier решает это прозрачно.
+    - 400: модель не поддерживает формат запроса (JSON-schema) — сразу fallback.
+    - 429: rate limit — ждём 5 сек, затем fallback.
+    - 502/503: провайдер временно недоступен — сразу fallback.
+    Fallback-ярус задаётся в AgentSpec.fallback_tier (по умолчанию "strong").
+    Токены каждого успешного вызова пишутся в token_log.
     """
     agent, enabled = await build(name)
     if not enabled:
@@ -181,31 +200,46 @@ async def run_safe(
         kwargs["usage_limits"] = usage_limits
 
     try:
-        return await agent.run(prompt, **kwargs), True
+        result = await agent.run(prompt, **kwargs)
+        await _log_tokens(name, result)
+        return result, True
     except ModelHTTPError as e:
-        if e.status_code != 400:
+        if e.status_code not in FALLBACK_STATUSES:
             raise
-        spec = REGISTRY[name]
-        log.warning(
-            "agent %s: 400 от модели %s (не поддерживает формат запроса), "
-            "переключаюсь на strong-tier",
-            name, e.model_name,
-        )
-        from . import errlog  # импорт здесь — чтобы не плодить зависимости на старте
+        # сохраняем до выхода из except-блока: Python удаляет `e` после него
+        status_code = e.status_code
+        model_name = e.model_name or "unknown"
 
-        await errlog.record(
-            "agent", f"{name}: fallback на strong",
-            f"HTTP 400 от {e.model_name} — модель не приняла формат запроса, повторил на strong-tier",
-        )
-        fallback_model = await settings_store.tier_model("strong")
-        eff = await effective(name)
-        disabled = set(eff["disabled_tools"])
-        tools = [t for t in spec.tools if t.__name__ not in disabled]
-        fallback_agent = Agent(
-            get_model(fallback_model),
-            output_type=spec.output_type,
-            system_prompt=eff["prompt"],
-            tools=tools,
-            retries=spec.retries,
-        )
-        return await fallback_agent.run(prompt, **kwargs), True
+    spec = REGISTRY[name]
+    fallback_tier = spec.fallback_tier
+
+    if status_code == 429:
+        reason = f"HTTP 429 от {model_name} — rate limit, жду 5 сек и повторяю на {fallback_tier}-tier"
+        log.warning("agent %s: 429 от %s (rate limit), жду 5 сек → %s-tier", name, model_name, fallback_tier)
+        await asyncio.sleep(5)
+    elif status_code == 400:
+        reason = f"HTTP 400 от {model_name} — модель не приняла формат запроса, повторил на {fallback_tier}-tier"
+        log.warning("agent %s: 400 от %s (не поддерживает формат запроса), переключаюсь на %s-tier", name, model_name, fallback_tier)
+    else:
+        reason = f"HTTP {status_code} от {model_name} — провайдер временно недоступен, повторяю на {fallback_tier}-tier"
+        log.warning("agent %s: %s от %s, переключаюсь на %s-tier", name, status_code, model_name, fallback_tier)
+
+    from . import errlog  # импорт здесь — чтобы не плодить зависимости на старте
+    await errlog.record(
+        "agent", f"{name}: fallback на {fallback_tier}",
+        reason,
+    )
+    fallback_model = await settings_store.tier_model(fallback_tier)
+    eff = await effective(name)
+    disabled = set(eff["disabled_tools"])
+    tools = [t for t in spec.tools if t.__name__ not in disabled]
+    fallback_agent = Agent(
+        get_model(fallback_model),
+        output_type=spec.output_type,
+        system_prompt=eff["prompt"],
+        tools=tools,
+        retries=spec.retries,
+    )
+    result = await fallback_agent.run(prompt, **kwargs)
+    await _log_tokens(name, result)
+    return result, True

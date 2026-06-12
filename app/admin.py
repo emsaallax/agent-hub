@@ -376,6 +376,40 @@ async def unwatch(product_id: int):
     return {"message": await monitoring.unwatch(product_id)}
 
 
+@router.get("/tokens")
+async def token_stats():
+    by_agent = await db.fetch("""
+        SELECT
+            agent_name,
+            COALESCE(SUM(input_tokens), 0)  AS input_tokens,
+            COALESCE(SUM(output_tokens), 0) AS output_tokens,
+            COALESCE(SUM(total_tokens), 0)  AS total_tokens,
+            COUNT(*)                         AS calls
+        FROM token_log
+        WHERE created_at >= now() - interval '7 days'
+        GROUP BY agent_name
+        ORDER BY total_tokens DESC
+    """)
+    by_day = await db.fetch("""
+        SELECT
+            date_trunc('day', created_at)    AS day,
+            COALESCE(SUM(total_tokens), 0)   AS total_tokens,
+            COUNT(*)                          AS calls
+        FROM token_log
+        WHERE created_at >= now() - interval '7 days'
+        GROUP BY 1
+        ORDER BY 1 DESC
+    """)
+    total_7d = await db.fetchval(
+        "SELECT COALESCE(SUM(total_tokens), 0) FROM token_log WHERE created_at >= now() - interval '7 days'"
+    )
+    return {
+        "by_agent": _rows(by_agent),
+        "by_day": _rows(by_day),
+        "total_7d": total_7d,
+    }
+
+
 @router.post("/jobs/{job}")
 async def run_job(job: str):
     if job == "outreach":

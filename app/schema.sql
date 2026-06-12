@@ -167,3 +167,16 @@ CREATE TABLE IF NOT EXISTS price_history (
     available BOOLEAN,
     checked_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ===== Лог токенов =====
+
+CREATE TABLE IF NOT EXISTS token_log (
+    id BIGSERIAL PRIMARY KEY,
+    agent_name TEXT NOT NULL,
+    task_kind TEXT,
+    input_tokens INT,
+    output_tokens INT,
+    total_tokens INT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_token_log_created ON token_log (created_at DESC);
