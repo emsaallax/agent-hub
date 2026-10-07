@@ -581,6 +581,16 @@ async def tools_status():
             "detail": "публичный API, ключ не нужен",
         },
         {
+            "name": "poizon",
+            "title": "Poizon (Dewu)",
+            "ok": bool(settings.poizon_apify_token or settings.serper_api_key or settings.tavily_api_key),
+            "detail": (
+                f"Apify: {settings.poizon_apify_actor}" if settings.poizon_apify_token
+                else "только поиск по сайту (нет POIZON_APIFY_TOKEN)" if (settings.serper_api_key or settings.tavily_api_key)
+                else "нет ключа (POIZON_APIFY_TOKEN или SERPER_API_KEY)"
+            ),
+        },
+        {
             "name": "scraper",
             "title": "Чтение страниц",
             "ok": True,

@@ -25,7 +25,7 @@
 | Схема БД (идемпотентная) | `app/schema.sql` |
 | Админка API + auth | `app/admin.py` |
 | Админка UI (весь интерфейс) | `app/static/admin.html` |
-| Внешние инструменты | `app/tools/` (web_search, twogis, wildberries, scraper, sheets) |
+| Внешние инструменты | `app/tools/` (web_search, twogis, wildberries, poizon, scraper, sheets) |
 
 ## Правила работы (экономия контекста)
 
