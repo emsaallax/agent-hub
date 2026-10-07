@@ -81,7 +81,7 @@
 |---|---|---|---|
 | `orchestrator` | orchestrator | 17 инструментов (см. ниже) | принимает твои сообщения, раздаёт задачи |
 | `researcher` | cheap | `search_web`, `fetch_page`, `vault_search` | произвольные исследования: рынок, конкуренты, ниши; пишет в vault |
-| `product` | cheap | `search_web`, `wb_search`, `poizon_search`, `fetch_page` | сравнение цен, поставщики, новинки → Google-таблица + сводка |
+| `product` | cheap | `search_web`, `wb_search`, `fetch_page` | сравнение цен, поставщики, новинки → Google-таблица + сводка |
 | `lead` | cheap | `twogis_search`, `search_web`, `fetch_page` | компании с телефонами по нише/городу → база + таблица |
 | `outreach_drafter` | cheap | — | пишет первое сообщение лиду |
 | `outreach_reviewer` | strong | — | вычитывает черновик перед аппрувом |
@@ -189,7 +189,7 @@ agent-hub/
     ├── admin.py            # API админки + auth (HTTP Basic)
     ├── static/admin.html   # весь интерфейс админки (один файл)
     ├── subagents/          # product, lead, outreach, inbox, code
-    └── tools/              # web_search, twogis, wildberries, poizon, scraper, sheets
+    └── tools/              # web_search, twogis, wildberries, scraper, sheets
 ```
 
 ---
@@ -204,7 +204,6 @@ agent-hub/
 | Serper | веб-поиск Google | 2500 запросов бесплатно |
 | 2GIS API | организации с телефонами | бесплатный лимит |
 | Wildberries | публичный API каталога | бесплатно, без ключа |
-| Poizon (Dewu) | Apify-парсер (POIZON_APIFY_TOKEN), без ключа — поиск по poizon.com через Serper | Apify платно по факту запусков |
 | Google Sheets | таблицы с результатами | бесплатно (сервисный аккаунт) |
 
 ## 10. Безопасность

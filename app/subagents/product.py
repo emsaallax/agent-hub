@@ -6,13 +6,13 @@ from pydantic_ai.usage import UsageLimits
 
 from .. import errlog
 from ..agents_registry import AgentSpec, build, register, run_safe
-from ..tools import poizon, scraper, sheets, web_search, wildberries
+from ..tools import scraper, sheets, web_search, wildberries
 
 
 class ProductItem(BaseModel):
     title: str
     price: str  # строкой: "1 290 ₽", "от 800 ₽/шт при опте"
-    source: str  # WB | Poizon | сайт | поставщик
+    source: str  # WB | сайт | поставщик
     url: str
     note: str = ""
 
@@ -24,9 +24,7 @@ class ProductReport(BaseModel):
 
 SYSTEM = (
     "Ты — агент поиска товаров для владельца бизнеса. Работаешь по-русски.\n"
-    "Используй инструменты: wb_search (Wildberries), poizon_search (Poizon/Dewu — кроссовки, одежда, оригиналы из Китая),\n"
-    "search_web (общий поиск), fetch_page (открыть страницу).\n"
-    "Если просят Poizon/Пойзон/Dewu — обязательно используй poizon_search; на Poizon лучше искать по-английски или по артикулу.\n"
+    "Используй инструменты: wb_search (Wildberries), search_web (общий поиск), fetch_page (открыть страницу).\n"
     "Собирай конкретику: точное название, цена, ссылка. Не выдумывай цены — только из результатов инструментов.\n"
     "Для поставщиков ищи: 'купить оптом <товар>', 'производитель <товар>', и доставай телефоны/сайты со страниц.\n"
     "В summary дай короткий вывод: лучшие варианты, разброс цен, рекомендация."
@@ -52,14 +50,6 @@ async def wb_search(query: str) -> str:
         return f"WB недоступен: {e}"
 
 
-async def poizon_search(query: str) -> str:
-    """Поиск товаров на Poizon (Dewu): название, бренд, артикул, цена, цены по размерам, ссылка."""
-    try:
-        return poizon.format_results(await poizon.search(query))
-    except Exception as e:
-        return f"Poizon недоступен: {e}"
-
-
 async def fetch_page(url: str) -> str:
     """Открыть страницу и получить её текст (для цен и контактов с сайтов)."""
     try:
@@ -74,9 +64,9 @@ register(
         title="Поиск товаров",
         tier="cheap",
         prompt=SYSTEM,
-        description="Сравнение цен (WB, Poizon, сайты), поиск поставщиков, новинки. Результат — таблица + сводка.",
+        description="Сравнение цен, поиск поставщиков, новинки. Результат — таблица + сводка.",
         output_type=ProductReport,
-        tools=[search_web, wb_search, poizon_search, fetch_page],
+        tools=[search_web, wb_search, fetch_page],
     )
 )
 

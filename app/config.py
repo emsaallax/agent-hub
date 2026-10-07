@@ -31,9 +31,6 @@ class Settings(BaseSettings):
     serper_api_key: str = ""
     tavily_api_key: str = ""
     twogis_api_key: str = ""
-    # Poizon через Apify (пусто = поиск по poizon.com через веб-поиск)
-    poizon_apify_token: str = ""
-    poizon_apify_actor: str = "piotrv1001/poizon-listings-scraper"
 
     # Google Sheets
     google_service_account_file: str = "secrets/google-service-account.json"
