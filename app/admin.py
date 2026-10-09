@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
-from . import agents_registry, db, memory, monitoring, reflection, settings_store, tasks, vault
+from . import agents_registry, db, memory, mind, monitoring, reflection, settings_store, tasks, vault
 from .config import settings
 from .subagents import outreach
 
@@ -422,6 +422,10 @@ async def run_job(job: str):
         task_id = await tasks.create("reflection", "запуск из админки")
         tasks.start(task_id, reflection.run_reflection)
         return {"message": f"Рефлексия запущена (задача #{task_id})."}
+    if job == "mind":
+        task_id = await tasks.create("mind", "запуск из админки")
+        tasks.start(task_id, lambda: mind.think(force=True))
+        return {"message": f"Разум думает (задача #{task_id}). Мысль ляжет в дневник."}
     raise HTTPException(404, "Неизвестная задача")
 
 
@@ -633,6 +637,10 @@ SETTING_KEYS = (
     "outreach_batch_per_tick",
     "outreach_min_delay_s",
     "outreach_max_delay_s",
+    "mind_daily_messages",
+    "mind_daily_actions",
+    "mind_quiet_from",
+    "mind_quiet_to",
 )
 
 
@@ -646,11 +654,14 @@ async def get_settings():
             "effective": await settings_store.get_int(key, default),
         }
     out["autonomy_level"] = await settings_store.get("autonomy_level", "medium")
+    out["mind_enabled"] = await settings_store.get("mind_enabled", "1") == "1"
     out["info"] = {
         "owner_phone": settings.owner_phone,
         "scheduler_enabled": settings.scheduler_enabled,
         "outreach_tick_minutes": settings.outreach_tick_minutes,
         "monitoring_tick_hours": settings.monitoring_tick_hours,
+        "mind_tick_minutes": settings.mind_tick_minutes,
+        "owner_tz": settings.owner_tz,
         "data_dir": settings.data_dir,
     }
     return out
@@ -661,7 +672,12 @@ class SettingsUpdate(BaseModel):
     outreach_batch_per_tick: int | None = None
     outreach_min_delay_s: int | None = None
     outreach_max_delay_s: int | None = None
+    mind_daily_messages: int | None = None
+    mind_daily_actions: int | None = None
+    mind_quiet_from: int | None = None
+    mind_quiet_to: int | None = None
     autonomy_level: str | None = None
+    mind_enabled: bool | None = None
 
 
 @router.put("/settings")
@@ -674,4 +690,6 @@ async def update_settings(body: SettingsUpdate):
         if body.autonomy_level not in ("low", "medium", "high"):
             raise HTTPException(400, "autonomy_level: low | medium | high")
         await settings_store.set("autonomy_level", body.autonomy_level)
+    if body.mind_enabled is not None:
+        await settings_store.set("mind_enabled", "1" if body.mind_enabled else "0")
     return {"ok": True}

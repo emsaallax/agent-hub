@@ -15,6 +15,7 @@
 | Память: окно/выжимка/факты/архив | `app/memory.py` |
 | Vault (Obsidian-заметки) + скиллы + WebDAV | `app/vault.py` |
 | Рефлексия (самоанализ, уроки) | `app/reflection.py` |
+| Разум: автономный цикл мыслей, цели, напоминания | `app/mind.py` |
 | Фоновые задачи + after_task + дедуп + таймаут | `app/tasks.py` |
 | Журнал ошибок (error_log, классификация причин) | `app/errlog.py` |
 | Мониторинг цен | `app/monitoring.py` |

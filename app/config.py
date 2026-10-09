@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     outreach_tick_minutes: int = 15
     monitoring_tick_hours: int = 6
 
+    # «Разум» (app/mind.py): как часто ассистент сам просыпается подумать.
+    mind_tick_minutes: int = 120
+    # Часовой пояс владельца: тихие часы, напоминания, «сейчас» в промптах.
+    owner_tz: str = "Asia/Almaty"
+
+    # Лимиты разума (меняются в админке без рестарта)
+    mind_daily_messages: int = 3   # сколько раз в день может написать сам
+    mind_daily_actions: int = 2    # сколько исследований в день может запустить сам (autonomy=high)
+    mind_quiet_from: int = 23      # тихие часы: с (локальное время владельца)
+    mind_quiet_to: int = 8         # тихие часы: до
+
     data_dir: str = "data"
 
     @property

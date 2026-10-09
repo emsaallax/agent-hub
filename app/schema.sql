@@ -180,3 +180,34 @@ CREATE TABLE IF NOT EXISTS token_log (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_token_log_created ON token_log (created_at DESC);
+
+-- ===== Разум: цели, напоминания, мысли =====
+
+CREATE TABLE IF NOT EXISTS goals (
+    id BIGSERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT 'owner',        -- owner | mind (инициатива самого ассистента)
+    status TEXT NOT NULL DEFAULT 'active',       -- active | done | dropped
+    progress TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS reminders (
+    id BIGSERIAL PRIMARY KEY,
+    text TEXT NOT NULL,
+    due_at TIMESTAMPTZ NOT NULL,
+    repeat TEXT NOT NULL DEFAULT 'none',         -- none | daily | weekly
+    sent BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders (due_at) WHERE NOT sent;
+
+CREATE TABLE IF NOT EXISTS thoughts (
+    id BIGSERIAL PRIMARY KEY,
+    content TEXT NOT NULL,                       -- внутренний монолог
+    messaged BOOLEAN NOT NULL DEFAULT FALSE,     -- написал ли владельцу
+    launched_task BIGINT,                        -- запущенная сам задача (если была)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_thoughts_created ON thoughts (created_at DESC);

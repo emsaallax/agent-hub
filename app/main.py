@@ -6,7 +6,7 @@ from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
 
-from . import admin, db, monitoring, orchestrator, reflection, tasks
+from . import admin, db, mind, monitoring, orchestrator, reflection, tasks
 from .config import settings
 from .subagents import code, inbox, lead, outreach, product, researcher  # noqa: F401 — регистрация агентов в реестре
 
@@ -58,10 +58,20 @@ async def lifespan(app: FastAPI):
             hours=24,
             id="reflection_daily", coalesce=True, max_instances=1,
         )
+        scheduler.add_job(
+            mind.tick, "interval",
+            minutes=settings.mind_tick_minutes,
+            id="mind_tick", coalesce=True, max_instances=1,
+        )
+        scheduler.add_job(
+            mind.reminders_tick, "interval",
+            minutes=1,
+            id="reminders_tick", coalesce=True, max_instances=1,
+        )
         scheduler.start()
         log.info(
-            "Планировщик: рассылка каждые %s мин, мониторинг каждые %s ч",
-            settings.outreach_tick_minutes, settings.monitoring_tick_hours,
+            "Планировщик: рассылка каждые %s мин, мониторинг каждые %s ч, разум каждые %s мин",
+            settings.outreach_tick_minutes, settings.monitoring_tick_hours, settings.mind_tick_minutes,
         )
     yield
     if scheduler.running:

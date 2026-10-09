@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic_ai.usage import UsageLimits
 
-from . import db, errlog, memory, monitoring, reflection, settings_store, tasks, vault, wa
+from . import db, errlog, memory, mind, monitoring, reflection, settings_store, tasks, vault, wa
 from .agents_registry import AgentSpec, build, register, run_safe
 from .subagents import code, lead, outreach, product, researcher
 
@@ -35,6 +35,12 @@ SYSTEM = """Ты — личный ассистент-оркестратор вл
 - Vault — твоя база заметок (журнал задач, исследования, скиллы с GitHub, рефлексии). vault_search — ищи там контекст, vault_write — записывай важное, vault_read — читай заметку целиком.
 - search_memory — архив прошлых задач; remember — запомнить факт навсегда.
 - reflect_now — твоя саморефлексия: разбор своей работы, уроки в память.
+
+Свой разум и автономия:
+- У тебя есть собственный разум: он сам просыпается по таймеру, думает о целях владельца, ведёт дневник и сам пишет владельцу (сообщения с 🧠 — это ты).
+- Цели: владелец говорит, к чему стремится («хочу…», «моя цель…», «надо до декабря…») — запиши set_goal. list_goals / update_goal — смотреть и отмечать прогресс.
+- Напоминания: «напомни…» — set_reminder (время считай от строки «Сейчас:» в контексте). list_reminders / cancel_reminder.
+- «Что думаешь?», «есть идеи?», «о чём размышляешь?» — think_now. «О чём ты думал?» — show_thoughts.
 
 Запрещено:
 - "Хорошо, сейчас сделаю", "Понял, занимаюсь", "Конечно!" и любые шаблонные подтверждения.
@@ -318,6 +324,9 @@ register(
             start_code_task, start_ads_task,
             get_tasks, get_task_trace, search_memory, remember,
             vault_search, vault_write, vault_read, reflect_now,
+            mind.set_goal, mind.list_goals, mind.update_goal,
+            mind.set_reminder, mind.list_reminders, mind.cancel_reminder,
+            mind.think_now, mind.show_thoughts,
         ],
     )
 )
@@ -333,8 +342,9 @@ async def handle_owner_message(text: str) -> None:
 
 async def _process_owner_message(text: str) -> None:
     context = await memory.build_context_block()  # контекст до записи нового сообщения, чтобы не дублировать его
+    mind_context = await mind.context_block()
     await memory.add_message("user", text)
-    prompt = f"{context}\n\n---\nНовое сообщение владельца:\n{text}"
+    prompt = f"{mind_context}\n\n{context}\n\n---\nНовое сообщение владельца:\n{text}"
     try:
         _health["model"] = await settings_store.tier_model("orchestrator")
         result, _ = await run_safe("orchestrator", prompt, usage_limits=UsageLimits(request_limit=6))

@@ -24,6 +24,7 @@ _KIND_TIERS: dict[str, list[str]] = {
     "outreach_prepare":  ["cheap", "strong"],
     "code":              ["cheap", "strong"],
     "reflection":        ["cheap"],
+    "mind":              ["orchestrator"],
 }
 
 

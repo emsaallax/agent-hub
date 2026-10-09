@@ -10,3 +10,4 @@ gspread>=6.1
 google-auth>=2.30
 apscheduler>=3.10
 wsgidav>=4.3
+tzdata>=2024.1

@@ -523,10 +523,21 @@ async function rSettings(){
       <select id="autonomy-level" style="max-width:420px">
         <option value="low"       ${autonomy==='low'     ?'selected':''}>low — только отправить результат, ничего не предлагать</option>
         <option value="medium"    ${autonomy==='medium'  ?'selected':''}>medium — предложить следующий шаг (дефолт)</option>
-        <option value="high"      ${autonomy==='high'    ?'selected':''}>high — может сам запустить исследование как следующий шаг</option>
+        <option value="high"      ${autonomy==='high'    ?'selected':''}>high — может сам запускать исследования (после задач и в цикле разума)</option>
       </select>
     </div>
     <button class="btn" onclick="saveSettings()">Сохранить</button>
+  </div>
+  <div class="panel">
+    <h3>🧠 Разум (сам думает и пишет)</h3>
+    <div class="muted" style="margin-bottom:10px">Каждые ${s.info.mind_tick_minutes} мин (кроме тихих часов, по времени ${esc(s.info.owner_tz)}) ассистент сам думает о твоих целях, пишет мысль в vault (Дневник/), и если есть что-то ценное — пишет тебе. При автономии high может сам запустить исследование. Рассылку сам не запускает никогда.</div>
+    <div class="field"><label><input type="checkbox" id="mind-enabled" ${s.mind_enabled?'checked':''}> Разум включён</label></div>
+    ${f("mind_daily_messages","Сам пишет мне максимум раз в день")}
+    ${f("mind_daily_actions","Сам запускает исследований в день (только при high)")}
+    ${f("mind_quiet_from","Тихие часы: с (час)")}
+    ${f("mind_quiet_to","Тихие часы: до (час)")}
+    <button class="btn" onclick="saveSettings()">Сохранить</button>
+    <button class="btn ghost" onclick="runJob('mind').then(r=>toast(r.message))">Подумать сейчас</button>
   </div>
   <div class="panel">
     <h3>Рефлексия</h3>
@@ -552,8 +563,9 @@ async function rSettings(){
   </div>`;
 }
 window.saveSettings = async () => {
-  const body = { autonomy_level: $("#autonomy-level")?.value };
-  for(const k of ["outreach_daily_limit","outreach_batch_per_tick","outreach_min_delay_s","outreach_max_delay_s"])
+  const body = { autonomy_level: $("#autonomy-level")?.value, mind_enabled: !!$("#mind-enabled")?.checked };
+  for(const k of ["outreach_daily_limit","outreach_batch_per_tick","outreach_min_delay_s","outreach_max_delay_s",
+                  "mind_daily_messages","mind_daily_actions","mind_quiet_from","mind_quiet_to"])
     body[k] = parseInt($("#set-"+k)?.value||"0", 10);
   await api("/settings", {method:"PUT", body});
   toast("Настройки сохранены.");
